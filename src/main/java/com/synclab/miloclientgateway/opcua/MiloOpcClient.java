@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.eclipse.milo.opcua.sdk.client.OpcUaClient;
 import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaSubscription;
 import org.eclipse.milo.opcua.sdk.client.nodes.UaNode;
+import org.eclipse.milo.opcua.stack.core.Identifiers;
 import org.eclipse.milo.opcua.stack.core.types.builtin.DataValue;
 import org.eclipse.milo.opcua.stack.core.types.builtin.NodeId;
 import org.eclipse.milo.opcua.stack.core.types.builtin.QualifiedName;
@@ -50,57 +51,49 @@ public class MiloOpcClient {
 
     /** 모든 Machine 노드 탐색 및 구독 */
     private void browseAndSubscribeAll() throws Exception {
-        NodeId rootId = new NodeId(2, "VirtualMachines");
+        // ns0 ObjectsFolder에서 "Machines" 찾기
+        var roots = client.getAddressSpace().browseNodes(Identifiers.ObjectsFolder);
+        UaNode machinesFolder = roots.stream()
+                .filter(n -> "Machines".equals(n.getBrowseName().getName()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Machines folder not found"));
 
-        // VirtualMachines 하위 Machine 폴더 검색
-        List<? extends UaNode> machines = client.getAddressSpace().browseNodes(rootId);
+        UaSubscription sub = client.getSubscriptionManager().createSubscription(1000.0).get();
 
-        for (UaNode machine : machines) {
-            String machineName = machine.getBrowseName().getName();
-            log.info("📂 Found Machine: {}", machineName);
+        // Machines 하위 설비 폴더 순회
+        for (UaNode machine : client.getAddressSpace().browseNodes(machinesFolder.getNodeId())) {
+            log.info("📂 Machine: {}", machine.getBrowseName().getName());
 
-            // 각 Machine 하위 변수 노드들 구독
-            List<? extends UaNode> variables = client.getAddressSpace().browseNodes(machine.getNodeId());
-            for (UaNode variable : variables) {
-                String varName = variable.getBrowseName().getName();
-                String fullNode = machineName + "." + varName;
-                NodeId nodeId = new NodeId(2, fullNode);
-
-                subscribeNode(nodeId, fullNode);
+            // 설비 하위 변수 노드 순회
+            for (UaNode var : client.getAddressSpace().browseNodes(machine.getNodeId())) {
+                NodeId nodeId = var.getNodeId();                 // ✅ 실제 NodeId 사용
+                String fullName = machine.getBrowseName().getName() + "." + var.getBrowseName().getName();
+                subscribeNode(sub, nodeId, fullName);            // ✅ 재사용 구독
             }
         }
     }
 
     /** 개별 노드 구독 */
-    private void subscribeNode(NodeId nodeId, String fullNodeName) {
+    private void subscribeNode(UaSubscription sub, NodeId nodeId, String fullNodeName) {
         try {
-            UaSubscription sub = client.getSubscriptionManager()
-                    .createSubscription(1000.0).get();
-
             UInteger clientHandle = Unsigned.uint(Math.abs(fullNodeName.hashCode()));
-
-            ReadValueId readValueId = new ReadValueId(nodeId, AttributeId.Value.uid(), null, QualifiedName.NULL_VALUE);
+            ReadValueId rvid = new ReadValueId(nodeId, AttributeId.Value.uid(), null, QualifiedName.NULL_VALUE);
             MonitoringParameters params = new MonitoringParameters(clientHandle, 1000.0, null, Unsigned.uint(10), true);
-            MonitoredItemCreateRequest request = new MonitoredItemCreateRequest(readValueId, MonitoringMode.Reporting, params);
+            MonitoredItemCreateRequest req = new MonitoredItemCreateRequest(rvid, MonitoringMode.Reporting, params);
 
-            UaSubscription.ItemCreationCallback onItemCreated = (item, id) ->
-                    item.setValueConsumer((monitoredItem, value) -> {
-                        if (value == null) return;
-
-                        Object newValue = value.getValue().getValue();
-                        log.info("[{}] {} = {}", ENDPOINT, fullNodeName, newValue);
-
+            UaSubscription.ItemCreationCallback cb = (item, id) ->
+                    item.setValueConsumer((it, value) -> {
+                        if (value == null || value.getValue() == null) return;
+                        Object v = value.getValue().getValue();
+                        log.info("[{}] {} = {}", ENDPOINT, fullNodeName, v);
                         String[] parts = fullNodeName.split("\\.");
-                        if (parts.length == 2) {
-                            mesApiService.sendMachineData(parts[0], parts[1], newValue);
-                        }
+                        if (parts.length == 2) mesApiService.sendMachineData(parts[0], parts[1], v);
                     });
 
-            sub.createMonitoredItems(TimestampsToReturn.Both, List.of(request), onItemCreated).get();
-            log.info("📡 Subscribed to {}", fullNodeName);
-
+            sub.createMonitoredItems(TimestampsToReturn.Both, List.of(req), cb).get();
+            log.info("📡 Subscribed {}", fullNodeName);
         } catch (Exception e) {
-            log.error("Subscription failed for {}: {}", fullNodeName, e.getMessage());
+            log.error("Subscription failed {}: {}", fullNodeName, e.getMessage(), e);
         }
     }
 

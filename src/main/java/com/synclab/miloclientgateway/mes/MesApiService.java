@@ -7,11 +7,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
-
-import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -24,7 +20,7 @@ public class MesApiService {
     private final RestTemplate restTemplate = new RestTemplate();
 
     // MES 수집 서버의 엔드포인트 URL
-    private static final String MES_API_URL = "http://localhost:8081/api/machines/data";
+    private static final String MES_API_URL = "http://localhost:8081/api/v1/machines/data";
 
     /**
      * MiloClient → MES 데이터 전달
