@@ -4,8 +4,10 @@ import com.synclab.miloclientgateway.mes.MesApiService;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.milo.opcua.sdk.client.OpcUaClient;
+import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaMonitoredItem;
 import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaSubscription;
 import org.eclipse.milo.opcua.sdk.client.nodes.UaNode;
+import org.eclipse.milo.opcua.sdk.client.nodes.UaVariableNode;
 import org.eclipse.milo.opcua.stack.core.Identifiers;
 import org.eclipse.milo.opcua.stack.core.types.builtin.DataValue;
 import org.eclipse.milo.opcua.stack.core.types.builtin.NodeId;
@@ -23,13 +25,15 @@ import org.springframework.stereotype.Component;
 import org.eclipse.milo.opcua.stack.core.AttributeId;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Slf4j
 @Component
 public class MiloOpcClient {
 
     private OpcUaClient client;
-    private static final String ENDPOINT = "opc.tcp://192.168.0.18:4840/milo";
+    private static final String ENDPOINT = "opc.tcp://192.168.0.38:4840/milo";
+    private final AtomicLong clientHandleSeq = new AtomicLong(1);
 
     @Autowired
     private MesApiService mesApiService;
@@ -39,10 +43,11 @@ public class MiloOpcClient {
         try {
             client = OpcUaClient.create(ENDPOINT);
             client.connect().get();
-            log.info("✅ Connected to Milo Server at {}", ENDPOINT);
+            log.info(" Connected to Milo Server at {}", ENDPOINT);
 
             // 전체 Machine 자동 구독 시작
-            browseAndSubscribeAll();
+//            browseAndSubscribeAll();
+            startUpSnapshotAndSubscribe();   // 스냅샷 + 구독
 
         } catch (Exception e) {
             log.error(" OPC UA connection failed: {}", e.getMessage(), e);
@@ -73,25 +78,79 @@ public class MiloOpcClient {
         }
     }
 
+    private void startUpSnapshotAndSubscribe() throws Exception {
+        // 0) Machines 폴더 찾기
+        var roots = client.getAddressSpace().browseNodes(Identifiers.ObjectsFolder);
+        UaNode machinesFolder = roots.stream()
+                .filter(n -> "Machines".equals(n.getBrowseName().getName()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Machines folder not found"));
+
+        // 1) Machines 하위 변수 노드 수집
+        record VarRef(String machine, UaNode var) {}
+        java.util.List<VarRef> vars = new java.util.ArrayList<>();
+        for (UaNode machine : client.getAddressSpace().browseNodes(machinesFolder.getNodeId())) {
+            String mName = machine.getBrowseName().getName();
+            for (UaNode var : client.getAddressSpace().browseNodes(machine.getNodeId())) {
+                if (var instanceof UaVariableNode) vars.add(new VarRef(mName, var));
+            }
+        }
+
+        // 2) 스냅샷 일괄 읽기
+        java.util.List<NodeId> nodeIds = vars.stream().map(v -> v.var().getNodeId()).toList();
+        java.util.List<DataValue> values =
+                client.readValues(0, TimestampsToReturn.Both, nodeIds).get();
+
+        // 3) MES로 1회 전송 + 로그
+        for (int i = 0; i < vars.size(); i++) {
+            VarRef ref = vars.get(i);
+            Object v = values.get(i).getValue() != null ? values.get(i).getValue().getValue() : null;
+            mesApiService.sendMachineData(ref.machine(), ref.var().getBrowseName().getName(), v);
+            log.info("SNAPSHOT {}.{} = {}", ref.machine(), ref.var().getBrowseName().getName(), v);
+        }
+
+        // 4) 변경 구독 생성
+        UaSubscription sub = client.getSubscriptionManager().createSubscription(1000.0).get();
+        for (VarRef ref : vars) {
+            String fullName = ref.machine() + "." + ref.var().getBrowseName().getName();
+            subscribeNode(sub, ref.var().getNodeId(), fullName);
+        }
+    }
+
     /** 개별 노드 구독 */
     private void subscribeNode(UaSubscription sub, NodeId nodeId, String fullNodeName) {
         try {
-            UInteger clientHandle = Unsigned.uint(Math.abs(fullNodeName.hashCode()));
+            UInteger clientHandle = Unsigned.uint(clientHandleSeq.getAndIncrement());
             ReadValueId rvid = new ReadValueId(nodeId, AttributeId.Value.uid(), null, QualifiedName.NULL_VALUE);
             MonitoringParameters params = new MonitoringParameters(clientHandle, 1000.0, null, Unsigned.uint(10), true);
             MonitoredItemCreateRequest req = new MonitoredItemCreateRequest(rvid, MonitoringMode.Reporting, params);
 
             UaSubscription.ItemCreationCallback cb = (item, id) ->
                     item.setValueConsumer((it, value) -> {
-                        if (value == null || value.getValue() == null) return;
+                        log.info(
+                                "MONITOR {} -> {} (status={}, sourceTs={}, serverTs={})",
+                                fullNodeName,
+                                value != null ? value.getValue() : null,
+                                value != null ? value.getStatusCode() : null,
+                                value != null ? value.getSourceTime() : null,
+                                value != null ? value.getServerTime() : null
+                        );
+
+                        if (value == null || value.getValue() == null) {
+                            return;
+                        }
+
                         Object v = value.getValue().getValue();
-                        log.info("[{}] {} = {}", ENDPOINT, fullNodeName, v);
                         String[] parts = fullNodeName.split("\\.");
-                        if (parts.length == 2) mesApiService.sendMachineData(parts[0], parts[1], v);
+                        if (parts.length == 2) {
+                            mesApiService.sendMachineData(parts[0], parts[1], v);
+                        }
                     });
 
-            sub.createMonitoredItems(TimestampsToReturn.Both, List.of(req), cb).get();
-            log.info("📡 Subscribed {}", fullNodeName);
+            List<UaMonitoredItem> items = sub.createMonitoredItems(TimestampsToReturn.Both, List.of(req), cb).get();
+            for (UaMonitoredItem item : items) {
+                log.info("📡 Subscribed {} (status={})", fullNodeName, item.getStatusCode());
+            }
         } catch (Exception e) {
             log.error("Subscription failed {}: {}", fullNodeName, e.getMessage(), e);
         }
