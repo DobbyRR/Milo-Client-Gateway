@@ -9,6 +9,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Map;
 import java.util.Optional;
 
@@ -51,8 +53,7 @@ public class CmdController {
                         "line", line,
                         "action", action,
                         "orderNo", orderNo,
-                        "targetQty", targetQty,
-                        "ppm", ppm
+                        "targetQty", targetQty
                 ));
             }
             return ResponseEntity.internalServerError().body(Map.of(
@@ -100,6 +101,53 @@ public class CmdController {
         return ResponseEntity.internalServerError().body(Map.of(
                 "status", "failed",
                 "node", nodePath
+        ));
+    }
+
+    // -------- 테스트용 라인 지령 엔드포인트 (MES 미연동 시 수동 동작 확인) --------
+
+    @PostMapping("/command/test/start")
+    public ResponseEntity<?> triggerTestStart() {
+        String orderNo = "TEST-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
+        boolean ok = miloClient.sendLineCommand("Line01", "START", orderNo, 100, null);
+        if (ok) {
+            return ResponseEntity.ok(Map.of(
+                    "status", "started",
+                    "orderNo", orderNo,
+                    "targetQty", 100
+            ));
+        }
+        return ResponseEntity.internalServerError().body(Map.of(
+                "status", "failed",
+                "action", "START"
+        ));
+    }
+
+    @PostMapping("/command/test/ack")
+    public ResponseEntity<?> triggerTestAck() {
+        boolean ok = miloClient.sendLineCommand("Line01", "ACK", null, null, null);
+        if (ok) {
+            return ResponseEntity.ok(Map.of(
+                    "status", "acked"
+            ));
+        }
+        return ResponseEntity.internalServerError().body(Map.of(
+                "status", "failed",
+                "action", "ACK"
+        ));
+    }
+
+    @PostMapping("/command/test/stop")
+    public ResponseEntity<?> triggerTestStop() {
+        boolean ok = miloClient.sendLineCommand("Line01", "STOP", null, null, null);
+        if (ok) {
+            return ResponseEntity.ok(Map.of(
+                    "status", "stopped"
+            ));
+        }
+        return ResponseEntity.internalServerError().body(Map.of(
+                "status", "failed",
+                "action", "STOP"
         ));
     }
 

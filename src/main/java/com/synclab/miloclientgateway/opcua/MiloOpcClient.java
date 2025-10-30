@@ -231,11 +231,15 @@ public class MiloOpcClient {
 
         switch (normalizedAction) {
             case "START" -> {
-                if (orderNo == null || orderNo.isBlank() || targetQty == null || ppm == null) {
-                    log.warn("START command requires orderNo, targetQty and ppm (line={}).", lineName);
+                if (orderNo == null || orderNo.isBlank() || targetQty == null) {
+                    log.warn("START command requires orderNo and targetQty (line={}).", lineName);
                     return false;
                 }
-                command = String.format("START:%s:%d:%d", orderNo, targetQty, ppm);
+                if (ppm != null && ppm > 0) {
+                    command = String.format("START:%s:%d:%d", orderNo, targetQty, ppm);
+                } else {
+                    command = String.format("START:%s:%d", orderNo, targetQty);
+                }
             }
             case "ACK", "STOP", "RESET" -> command = normalizedAction;
             default -> {
