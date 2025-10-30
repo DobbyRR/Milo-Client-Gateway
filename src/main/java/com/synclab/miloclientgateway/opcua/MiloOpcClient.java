@@ -8,6 +8,7 @@ import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaMonitoredItem;
 import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaSubscription;
 import org.eclipse.milo.opcua.sdk.client.nodes.UaNode;
 import org.eclipse.milo.opcua.sdk.client.nodes.UaVariableNode;
+import org.eclipse.milo.opcua.stack.core.AttributeId;
 import org.eclipse.milo.opcua.stack.core.Identifiers;
 import org.eclipse.milo.opcua.stack.core.types.builtin.DataValue;
 import org.eclipse.milo.opcua.stack.core.types.builtin.NodeId;
@@ -16,164 +17,281 @@ import org.eclipse.milo.opcua.stack.core.types.builtin.Variant;
 import org.eclipse.milo.opcua.stack.core.types.builtin.unsigned.UInteger;
 import org.eclipse.milo.opcua.stack.core.types.builtin.unsigned.Unsigned;
 import org.eclipse.milo.opcua.stack.core.types.enumerated.MonitoringMode;
+import org.eclipse.milo.opcua.stack.core.types.enumerated.NodeClass;
 import org.eclipse.milo.opcua.stack.core.types.enumerated.TimestampsToReturn;
 import org.eclipse.milo.opcua.stack.core.types.structured.MonitoredItemCreateRequest;
 import org.eclipse.milo.opcua.stack.core.types.structured.MonitoringParameters;
 import org.eclipse.milo.opcua.stack.core.types.structured.ReadValueId;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.eclipse.milo.opcua.stack.core.AttributeId;
+
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Slf4j
 @Component
 public class MiloOpcClient {
 
-    private OpcUaClient client;
     private static final String ENDPOINT = "opc.tcp://192.168.0.38:4840/milo";
+    private static final double DEFAULT_SAMPLING_INTERVAL = 1000.0;
+
     private final AtomicLong clientHandleSeq = new AtomicLong(1);
+    private final Map<String, NodeId> nodeLookup = new ConcurrentHashMap<>();
+
+    private OpcUaClient client;
 
     @Autowired
     private MesApiService mesApiService;
+
+    private record NodeTarget(NodeId nodeId, String group, String tag) {}
 
     @PostConstruct
     public void connect() {
         try {
             client = OpcUaClient.create(ENDPOINT);
             client.connect().get();
-            log.info(" Connected to Milo Server at {}", ENDPOINT);
+            log.info("Connected to Milo Server at {}", ENDPOINT);
 
-            // 전체 Machine 자동 구독 시작
-//            browseAndSubscribeAll();
-            startUpSnapshotAndSubscribe();   // 스냅샷 + 구독
-
+            startUpSnapshotAndSubscribe();
         } catch (Exception e) {
-            log.error(" OPC UA connection failed: {}", e.getMessage(), e);
-        }
-    }
-
-    /** 모든 Machine 노드 탐색 및 구독 */
-    private void browseAndSubscribeAll() throws Exception {
-        // ns0 ObjectsFolder에서 "Machines" 찾기
-        var roots = client.getAddressSpace().browseNodes(Identifiers.ObjectsFolder);
-        UaNode machinesFolder = roots.stream()
-                .filter(n -> "Machines".equals(n.getBrowseName().getName()))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Machines folder not found"));
-
-        UaSubscription sub = client.getSubscriptionManager().createSubscription(1000.0).get();
-
-        // Machines 하위 설비 폴더 순회
-        for (UaNode machine : client.getAddressSpace().browseNodes(machinesFolder.getNodeId())) {
-            log.info("📂 Machine: {}", machine.getBrowseName().getName());
-
-            // 설비 하위 변수 노드 순회
-            for (UaNode var : client.getAddressSpace().browseNodes(machine.getNodeId())) {
-                NodeId nodeId = var.getNodeId();                 // ✅ 실제 NodeId 사용
-                String fullName = machine.getBrowseName().getName() + "." + var.getBrowseName().getName();
-                subscribeNode(sub, nodeId, fullName);            // ✅ 재사용 구독
-            }
+            log.error("OPC UA connection failed: {}", e.getMessage(), e);
         }
     }
 
     private void startUpSnapshotAndSubscribe() throws Exception {
-        // 0) Machines 폴더 찾기
-        var roots = client.getAddressSpace().browseNodes(Identifiers.ObjectsFolder);
-        UaNode machinesFolder = roots.stream()
-                .filter(n -> "Machines".equals(n.getBrowseName().getName()))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Machines folder not found"));
+        UaNode machinesFolder = findMachinesFolder();
 
-        // 1) Machines 하위 변수 노드 수집
-        record VarRef(String machine, UaNode var) {}
-        java.util.List<VarRef> vars = new java.util.ArrayList<>();
-        for (UaNode machine : client.getAddressSpace().browseNodes(machinesFolder.getNodeId())) {
-            String mName = machine.getBrowseName().getName();
-            for (UaNode var : client.getAddressSpace().browseNodes(machine.getNodeId())) {
-                if (var instanceof UaVariableNode) vars.add(new VarRef(mName, var));
-            }
+        List<NodeTarget> targets = new ArrayList<>();
+        for (UaNode lineNode : client.getAddressSpace().browseNodes(machinesFolder.getNodeId())) {
+            collectLineNodes(lineNode, targets);
         }
 
-        // 2) 스냅샷 일괄 읽기
-        java.util.List<NodeId> nodeIds = vars.stream().map(v -> v.var().getNodeId()).toList();
-        java.util.List<DataValue> values =
-                client.readValues(0, TimestampsToReturn.Both, nodeIds).get();
-
-        // 3) MES로 1회 전송 + 로그
-        for (int i = 0; i < vars.size(); i++) {
-            VarRef ref = vars.get(i);
-            Object v = values.get(i).getValue() != null ? values.get(i).getValue().getValue() : null;
-            mesApiService.sendMachineData(ref.machine(), ref.var().getBrowseName().getName(), v);
-            log.info("SNAPSHOT {}.{} = {}", ref.machine(), ref.var().getBrowseName().getName(), v);
+        if (targets.isEmpty()) {
+            log.warn("No telemetry nodes discovered under Machines folder.");
+            return;
         }
 
-        // 4) 변경 구독 생성
-        UaSubscription sub = client.getSubscriptionManager().createSubscription(1000.0).get();
-        for (VarRef ref : vars) {
-            String fullName = ref.machine() + "." + ref.var().getBrowseName().getName();
-            subscribeNode(sub, ref.var().getNodeId(), fullName);
+        List<NodeId> nodeIds = targets.stream().map(NodeTarget::nodeId).toList();
+        List<DataValue> values = client.readValues(0, TimestampsToReturn.Both, nodeIds).get();
+        for (int i = 0; i < targets.size(); i++) {
+            NodeTarget target = targets.get(i);
+            Object payload = extractVariant(values.get(i));
+            mesApiService.sendMachineData(target.group(), target.tag(), payload);
+            log.info("SNAPSHOT {}.{} = {}", target.group(), target.tag(), payload);
+        }
+
+        UaSubscription sub = client.getSubscriptionManager().createSubscription(DEFAULT_SAMPLING_INTERVAL).get();
+        for (NodeTarget target : targets) {
+            subscribeNode(sub, target);
         }
     }
 
-    /** 개별 노드 구독 */
-    private void subscribeNode(UaSubscription sub, NodeId nodeId, String fullNodeName) {
+    private UaNode findMachinesFolder() throws Exception {
+        return client.getAddressSpace()
+                .browseNodes(Identifiers.ObjectsFolder)
+                .stream()
+                .filter(node -> "Machines".equals(node.getBrowseName().getName()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Machines folder not found in namespace."));
+    }
+
+    private void collectLineNodes(UaNode lineNode, List<NodeTarget> targets) throws Exception {
+        if (lineNode.getNodeClass() != NodeClass.Object) {
+            return;
+        }
+
+        String lineName = lineNode.getBrowseName().getName();
+        for (UaNode child : client.getAddressSpace().browseNodes(lineNode.getNodeId())) {
+            if (child instanceof UaVariableNode variable) {
+                String tag = normalizeLineTag(lineName, variable.getBrowseName().getName());
+                registerNode(lineName, tag, variable.getNodeId());
+                if (!"command".equalsIgnoreCase(tag)) {
+                    targets.add(new NodeTarget(variable.getNodeId(), lineName, tag));
+                }
+            } else if (child.getNodeClass() == NodeClass.Object) {
+                collectMachineNodes(lineName, child, targets);
+            }
+        }
+    }
+
+    private void collectMachineNodes(String lineName, UaNode machineFolder, List<NodeTarget> targets) throws Exception {
+        String machineName = machineFolder.getBrowseName().getName();
+        String group = lineName + "." + machineName;
+
+        for (UaNode node : client.getAddressSpace().browseNodes(machineFolder.getNodeId())) {
+            if (node instanceof UaVariableNode variable) {
+                String tag = normalizeMachineTag(machineName, variable.getBrowseName().getName());
+                registerNode(group, tag, variable.getNodeId());
+                if (!"command".equalsIgnoreCase(tag)) {
+                    targets.add(new NodeTarget(variable.getNodeId(), group, tag));
+                }
+            }
+        }
+    }
+
+    private String normalizeLineTag(String lineName, String browseName) {
+        String trimmed = stripPrefix(browseName, lineName + ".");
+        return trimLeadingDot(trimmed);
+    }
+
+    private String normalizeMachineTag(String machineName, String browseName) {
+        String trimmed = stripPrefix(browseName, machineName + ".");
+        return trimLeadingDot(trimmed);
+    }
+
+    private String trimLeadingDot(String value) {
+        String trimmed = value;
+        if (trimmed.startsWith(".")) {
+            trimmed = trimmed.substring(1);
+        }
+        return trimmed;
+    }
+
+    private String stripPrefix(String value, String prefix) {
+        if (value.startsWith(prefix)) {
+            return value.substring(prefix.length());
+        }
+        return value;
+    }
+
+    private void registerNode(String group, String tag, NodeId nodeId) {
+        String key = buildKey(group, tag);
+        NodeId previous = nodeLookup.put(key, nodeId);
+        if (previous != null && !previous.equals(nodeId)) {
+            log.debug("Node mapping for {} replaced ({} -> {}).", key, previous, nodeId);
+        }
+    }
+
+    private String buildKey(String group, String tag) {
+        return group + "|" + tag;
+    }
+
+    private void subscribeNode(UaSubscription sub, NodeTarget target) {
+        String label = target.group() + "." + target.tag();
         try {
             UInteger clientHandle = Unsigned.uint(clientHandleSeq.getAndIncrement());
-            ReadValueId rvid = new ReadValueId(nodeId, AttributeId.Value.uid(), null, QualifiedName.NULL_VALUE);
-            MonitoringParameters params = new MonitoringParameters(clientHandle, 1000.0, null, Unsigned.uint(10), true);
-            MonitoredItemCreateRequest req = new MonitoredItemCreateRequest(rvid, MonitoringMode.Reporting, params);
+            ReadValueId rvid = new ReadValueId(target.nodeId(), AttributeId.Value.uid(), null, QualifiedName.NULL_VALUE);
+            MonitoringParameters params = new MonitoringParameters(
+                    clientHandle,
+                    DEFAULT_SAMPLING_INTERVAL,
+                    null,
+                    Unsigned.uint(10),
+                    true
+            );
+            MonitoredItemCreateRequest request = new MonitoredItemCreateRequest(rvid, MonitoringMode.Reporting, params);
 
-            UaSubscription.ItemCreationCallback cb = (item, id) ->
+            UaSubscription.ItemCreationCallback callback = (item, id) ->
                     item.setValueConsumer((it, value) -> {
-                        log.info(
-                                "MONITOR {} -> {} (status={}, sourceTs={}, serverTs={})",
-                                fullNodeName,
-                                value != null ? value.getValue() : null,
+                        Object payload = extractVariant(value);
+                        log.info("MONITOR {} -> {} (status={}, sourceTs={}, serverTs={})",
+                                label,
+                                payload,
                                 value != null ? value.getStatusCode() : null,
                                 value != null ? value.getSourceTime() : null,
-                                value != null ? value.getServerTime() : null
-                        );
+                                value != null ? value.getServerTime() : null);
 
-                        if (value == null || value.getValue() == null) {
-                            return;
-                        }
-
-                        Object v = value.getValue().getValue();
-                        String[] parts = fullNodeName.split("\\.");
-                        if (parts.length == 2) {
-                            mesApiService.sendMachineData(parts[0], parts[1], v);
+                        if (payload != null) {
+                            mesApiService.sendMachineData(target.group(), target.tag(), payload);
                         }
                     });
 
-            List<UaMonitoredItem> items = sub.createMonitoredItems(TimestampsToReturn.Both, List.of(req), cb).get();
+            List<UaMonitoredItem> items = sub.createMonitoredItems(TimestampsToReturn.Both, List.of(request), callback).get();
             for (UaMonitoredItem item : items) {
-                log.info("📡 Subscribed {} (status={})", fullNodeName, item.getStatusCode());
+                log.info("Subscribed {} (status={})", label, item.getStatusCode());
             }
         } catch (Exception e) {
-            log.error("Subscription failed {}: {}", fullNodeName, e.getMessage(), e);
+            log.error("Subscription failed for {}: {}", label, e.getMessage(), e);
         }
     }
 
+    private Object extractVariant(DataValue value) {
+        if (value == null || value.getValue() == null) {
+            return null;
+        }
+        Variant variant = value.getValue();
+        return variant.isNotNull() ? variant.getValue() : null;
+    }
 
-    /** 단일 노드 쓰기 (MES → Milo) */
-    public boolean writeValue(String nodeName, Object newValue) {
+    public boolean sendLineCommand(String lineName,
+                                   String action,
+                                   String orderNo,
+                                   Integer targetQty,
+                                   Integer ppm) {
+        if (lineName == null || lineName.isBlank() || action == null || action.isBlank()) {
+            log.warn("Line command requires 'line' and 'action'. line={}, action={}", lineName, action);
+            return false;
+        }
+
+        String normalizedAction = action.trim().toUpperCase();
+        String command;
+
+        switch (normalizedAction) {
+            case "START" -> {
+                if (orderNo == null || orderNo.isBlank() || targetQty == null || ppm == null) {
+                    log.warn("START command requires orderNo, targetQty and ppm (line={}).", lineName);
+                    return false;
+                }
+                command = String.format("START:%s:%d:%d", orderNo, targetQty, ppm);
+            }
+            case "ACK", "STOP", "RESET" -> command = normalizedAction;
+            default -> {
+                log.warn("Unsupported line action '{}' for line {}.", action, lineName);
+                return false;
+            }
+        }
+
+        return writeValue(lineName, "command", command);
+    }
+
+    public boolean sendMachineCommand(String lineName, String machineName, String actionPayload) {
+        if (machineName == null || machineName.isBlank()) {
+            log.warn("Machine command requires machine name.");
+            return false;
+        }
+        String group = (lineName != null && !lineName.isBlank())
+                ? lineName + "." + machineName
+                : machineName;
+        return writeValue(group, "command", actionPayload);
+    }
+
+    public boolean writeValue(String group, String tag, Object newValue) {
+        String key = buildKey(group, tag);
+        NodeId nodeId = nodeLookup.get(key);
+        if (nodeId == null) {
+            log.warn("Node {}.{} not found in lookup table.", group, tag);
+            return false;
+        }
+
         try {
-            NodeId nodeId = new NodeId(2, nodeName);
             DataValue value = new DataValue(new Variant(newValue));
             client.writeValue(nodeId, value).get();
-            log.info(" Wrote {} = {}", nodeName, newValue);
+            log.info("Wrote {}.{} = {}", group, tag, newValue);
             return true;
         } catch (Exception e) {
-            log.error("Write failed: {}", e.getMessage());
+            log.error("Write failed for {}.{}: {}", group, tag, e.getMessage(), e);
             return false;
         }
     }
 
+    public boolean writeValue(String nodePath, Object newValue) {
+        if (nodePath == null) {
+            return false;
+        }
+        int idx = nodePath.lastIndexOf('.');
+        if (idx < 0) {
+            log.warn("Invalid node path '{}'. Expected format group.tag.", nodePath);
+            return false;
+        }
+        String group = nodePath.substring(0, idx);
+        String tag = nodePath.substring(idx + 1);
+        return writeValue(group, tag, newValue);
+    }
+
     public CompletableFuture<OpcUaClient> disconnect() {
-        return client != null
-                ? client.disconnect()
-                : CompletableFuture.completedFuture(null);
+        return client != null ? client.disconnect() : CompletableFuture.completedFuture(null);
     }
 }

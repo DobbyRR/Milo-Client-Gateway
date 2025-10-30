@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
+import java.util.Optional;
 
 @Slf4j
 @RestController
@@ -31,25 +32,95 @@ public class CmdController {
      */
     @PostMapping("/command")
     public ResponseEntity<?> sendCommand(@RequestBody Map<String, Object> req) {
-        String machine = (String) req.get("machine");
-        String tag = (String) req.get("tag");
-        Object value = req.get("value");
+        String line = stringValue(req.get("line"));
+        String machine = stringValue(req.get("machine"));
+        String action = stringValue(req.get("action"));
+        String tag = Optional.ofNullable(stringValue(req.get("tag")))
+                .orElse("command");
 
-        String nodeName = machine + "." + tag;
-        log.info("📩 Command received → {} = {}", nodeName, value);
+        // 1) Line-level command (recommended flow)
+        if (line != null && action != null && machine == null && "command".equalsIgnoreCase(tag)) {
+            String orderNo = stringValue(req.get("orderNo"));
+            Integer targetQty = intValue(req.get("targetQty"));
+            Integer ppm = intValue(req.get("ppm"));
 
-        boolean ok = miloClient.writeValue(nodeName, value);
+            boolean ok = miloClient.sendLineCommand(line, action, orderNo, targetQty, ppm);
+            if (ok) {
+                return ResponseEntity.ok(Map.of(
+                        "status", "success",
+                        "line", line,
+                        "action", action,
+                        "orderNo", orderNo,
+                        "targetQty", targetQty,
+                        "ppm", ppm
+                ));
+            }
+            return ResponseEntity.internalServerError().body(Map.of(
+                    "status", "failed",
+                    "reason", "line command rejected",
+                    "line", line,
+                    "action", action
+            ));
+        }
+
+        // 2) Machine-level or direct node write (fallback for diagnostics)
+        Object value = req.getOrDefault("value", action);
+        if (value == null) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "failed",
+                    "reason", "value or action must be provided"
+            ));
+        }
+
+        String nodePath;
+        if (machine != null) {
+            if (line != null) {
+                nodePath = line + "." + machine + "." + tag;
+            } else {
+                nodePath = machine + "." + tag;
+            }
+        } else if (line != null) {
+            nodePath = line + "." + tag;
+        } else {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "failed",
+                    "reason", "machine or line must be specified"
+            ));
+        }
+
+        log.info("Command write → {} = {}", nodePath, value);
+        boolean ok = miloClient.writeValue(nodePath, value);
         if (ok) {
             return ResponseEntity.ok(Map.of(
                     "status", "success",
-                    "node", nodeName,
+                    "node", nodePath,
                     "value", value
             ));
-        } else {
-            return ResponseEntity.internalServerError().body(Map.of(
-                    "status", "failed",
-                    "node", nodeName
-            ));
         }
+        return ResponseEntity.internalServerError().body(Map.of(
+                "status", "failed",
+                "node", nodePath
+        ));
+    }
+
+    private String stringValue(Object value) {
+        if (value instanceof String s) {
+            return s.trim().isEmpty() ? null : s.trim();
+        }
+        return null;
+    }
+
+    private Integer intValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value instanceof String s && !s.isBlank()) {
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException ignore) {
+                log.warn("Unable to parse integer from '{}'", s);
+            }
+        }
+        return null;
     }
 }
