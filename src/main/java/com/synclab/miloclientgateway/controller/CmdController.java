@@ -109,12 +109,12 @@ public class CmdController {
     @PostMapping("/command/test/start")
     public ResponseEntity<?> triggerTestStart() {
         String orderNo = "TEST-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
-        boolean ok = miloClient.sendLineCommand("Line01", "START", orderNo, 100, null);
+        boolean ok = miloClient.sendLineCommand("Line01", "START", orderNo, 150, null);
         if (ok) {
             return ResponseEntity.ok(Map.of(
                     "status", "started",
                     "orderNo", orderNo,
-                    "targetQty", 100
+                    "targetQty", 150
             ));
         }
         return ResponseEntity.internalServerError().body(Map.of(
