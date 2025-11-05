@@ -4,6 +4,7 @@ import com.synclab.miloclientgateway.opcua.MiloOpcClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -16,7 +17,7 @@ import java.util.Optional;
 
 @Slf4j
 @RestController
-@RequestMapping("api/v1/machines")
+@RequestMapping("/api/v1")
 @RequiredArgsConstructor
 public class CmdController {
 
@@ -25,16 +26,21 @@ public class CmdController {
     /**
      * MES → Milo 제어 명령 API
      * 예시 요청:
-     * POST /api/v1/machines/command
+     * POST /api/v1/orders/Line01/cmd
      * {
-     *   "machine": "Machine1",
-     *   "tag": "Command",
-     *   "value": "START"
+     *   "action": "START",
+     *   "orderNo": "ORDER-12345",
+     *   "targetQty": 150,
+     *   "ppm": 120
      * }
      */
-    @PostMapping("/command")
-    public ResponseEntity<?> sendCommand(@RequestBody Map<String, Object> req) {
-        String line = stringValue(req.get("line"));
+    @PostMapping("/orders/{lineCode}/cmd")
+    public ResponseEntity<?> sendCommand(@PathVariable String lineCode,
+                                         @RequestBody Map<String, Object> req) {
+        String line = stringValue(lineCode);
+        if (line == null) {
+            line = stringValue(req.get("line"));
+        }
         String machine = stringValue(req.get("machine"));
         String action = stringValue(req.get("action"));
         String tag = Optional.ofNullable(stringValue(req.get("tag")))
@@ -106,7 +112,7 @@ public class CmdController {
 
     // -------- 테스트용 라인 지령 엔드포인트 (MES 미연동 시 수동 동작 확인) --------
 
-    @PostMapping("/command/test/start")
+    @PostMapping("/machines/command/test/start")
     public ResponseEntity<?> triggerTestStart() {
         String orderNo = "TEST-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
         boolean ok = miloClient.sendLineCommand("Line01", "START", orderNo, 40, null);
@@ -123,7 +129,7 @@ public class CmdController {
         ));
     }
 
-    @PostMapping("/command/test/ack")
+    @PostMapping("/machines/command/test/ack")
     public ResponseEntity<?> triggerTestAck() {
         boolean ok = miloClient.sendLineCommand("Line01", "ACK", null, null, null);
         if (ok) {
@@ -137,7 +143,7 @@ public class CmdController {
         ));
     }
 
-    @PostMapping("/command/test/stop")
+    @PostMapping("/machines/command/test/stop")
     public ResponseEntity<?> triggerTestStop() {
         boolean ok = miloClient.sendLineCommand("Line01", "STOP", null, null, null);
         if (ok) {
