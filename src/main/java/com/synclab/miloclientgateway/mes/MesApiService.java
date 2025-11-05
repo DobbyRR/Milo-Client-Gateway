@@ -20,7 +20,7 @@ public class MesApiService {
     private final RestTemplate restTemplate = new RestTemplate();
 
     // MES 수집 서버의 엔드포인트 URL
-    private static final String MES_API_URL = "http://localhost:8081/api/v1/machines/data";
+    private static final String MES_API_URL = "http://localhost:8080/api/v1/machines/data";
 
     /**
      * MiloClient → MES 데이터 전달
