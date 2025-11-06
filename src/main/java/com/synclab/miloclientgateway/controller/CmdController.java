@@ -96,6 +96,9 @@ public class CmdController {
             ));
         }
 
+        log.info("MES command received: factory={}, line={}, action={}, orderNo={}, targetQty={}, itemCode={}, ppm={}, rawBody={}",
+                factory, line, action, orderNo, targetQty, itemCode, ppm, req);
+
         // 1) Line-level command (recommended flow)
         if (line != null && action != null && "command".equalsIgnoreCase(tag)) {
             if (itemCode == null) {
