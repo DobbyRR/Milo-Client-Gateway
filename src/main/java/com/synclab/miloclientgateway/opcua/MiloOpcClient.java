@@ -66,8 +66,10 @@ public class MiloOpcClient {
         UaNode machinesFolder = findMachinesFolder();
 
         List<NodeTarget> targets = new ArrayList<>();
-        for (UaNode lineNode : client.getAddressSpace().browseNodes(machinesFolder.getNodeId())) {
-            collectLineNodes(lineNode, targets);
+        for (UaNode child : client.getAddressSpace().browseNodes(machinesFolder.getNodeId())) {
+            if (child.getNodeClass() == NodeClass.Object) {
+                collectGroupNodes(child, new ArrayList<>(), targets);
+            }
         }
 
         if (targets.isEmpty()) {
@@ -99,48 +101,53 @@ public class MiloOpcClient {
                 .orElseThrow(() -> new IllegalStateException("Machines folder not found in namespace."));
     }
 
-    private void collectLineNodes(UaNode lineNode, List<NodeTarget> targets) throws Exception {
-        if (lineNode.getNodeClass() != NodeClass.Object) {
+    private void collectGroupNodes(UaNode currentNode,
+                                   List<String> parentPath,
+                                   List<NodeTarget> targets) throws Exception {
+        if (currentNode.getNodeClass() != NodeClass.Object) {
             return;
         }
 
-        String lineName = lineNode.getBrowseName().getName();
-        for (UaNode child : client.getAddressSpace().browseNodes(lineNode.getNodeId())) {
-            if (child instanceof UaVariableNode variable) {
-                String tag = normalizeLineTag(lineName, variable.getBrowseName().getName());
-                registerNode(lineName, tag, variable.getNodeId());
-                if (!"command".equalsIgnoreCase(tag)) {
-                    targets.add(new NodeTarget(variable.getNodeId(), lineName, tag));
-                }
-            } else if (child.getNodeClass() == NodeClass.Object) {
-                collectMachineNodes(lineName, child, targets);
-            }
+        List<String> currentPath = new ArrayList<>(parentPath);
+        String nodeName = currentNode.getBrowseName().getName();
+        String parentGroup = String.join(".", parentPath);
+        if (!nodeName.equals(parentGroup)) {
+            currentPath.add(nodeName);
         }
-    }
+        String group = String.join(".", currentPath);
 
-    private void collectMachineNodes(String lineName, UaNode machineFolder, List<NodeTarget> targets) throws Exception {
-        String machineName = machineFolder.getBrowseName().getName();
-        String group = lineName + "." + machineName;
-
-        for (UaNode node : client.getAddressSpace().browseNodes(machineFolder.getNodeId())) {
-            if (node instanceof UaVariableNode variable) {
-                String tag = normalizeMachineTag(machineName, variable.getBrowseName().getName());
+        for (UaNode child : client.getAddressSpace().browseNodes(currentNode.getNodeId())) {
+            if (child instanceof UaVariableNode variable) {
+                String tag = normalizeTag(group, variable.getBrowseName().getName());
                 registerNode(group, tag, variable.getNodeId());
                 if (!"command".equalsIgnoreCase(tag)) {
                     targets.add(new NodeTarget(variable.getNodeId(), group, tag));
                 }
+            } else if (child.getNodeClass() == NodeClass.Object) {
+                collectGroupNodes(child, currentPath, targets);
             }
         }
     }
 
-    private String normalizeLineTag(String lineName, String browseName) {
-        String trimmed = stripPrefix(browseName, lineName + ".");
+    private String normalizeTag(String group, String browseName) {
+        String trimmed = stripRepeatedPrefix(browseName, group + ".");
+        String[] parts = group.split("\\.");
+        if (parts.length > 0) {
+            String last = parts[parts.length - 1];
+            trimmed = stripRepeatedPrefix(trimmed, last + ".");
+        }
         return trimLeadingDot(trimmed);
     }
 
-    private String normalizeMachineTag(String machineName, String browseName) {
-        String trimmed = stripPrefix(browseName, machineName + ".");
-        return trimLeadingDot(trimmed);
+    private String stripRepeatedPrefix(String value, String prefix) {
+        if (prefix == null || prefix.isEmpty()) {
+            return value;
+        }
+        String result = value;
+        while (result.startsWith(prefix)) {
+            result = result.substring(prefix.length());
+        }
+        return result;
     }
 
     private String trimLeadingDot(String value) {
@@ -149,13 +156,6 @@ public class MiloOpcClient {
             trimmed = trimmed.substring(1);
         }
         return trimmed;
-    }
-
-    private String stripPrefix(String value, String prefix) {
-        if (value.startsWith(prefix)) {
-            return value.substring(prefix.length());
-        }
-        return value;
     }
 
     private void registerNode(String group, String tag, NodeId nodeId) {

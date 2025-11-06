@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Optional;
 
@@ -86,6 +87,8 @@ public class CmdController {
             ));
         }
 
+        String lineGroup = joinGroup(factory, line);
+
         String signaturePayload = buildSignaturePayload(factory, line, action, orderNo, targetQty, itemCode, ppm);
         String providedToken = tokenHeader.substring(7).trim();
         if (!HmacVerifier.verify(mesSecretKey, signaturePayload, providedToken)) {
@@ -96,8 +99,8 @@ public class CmdController {
             ));
         }
 
-        log.info("MES command received: factory={}, line={}, action={}, orderNo={}, targetQty={}, itemCode={}, ppm={}, rawBody={}",
-                factory, line, action, orderNo, targetQty, itemCode, ppm, req);
+        log.info("MES command received: factory={}, line={}, lineGroup={}, action={}, orderNo={}, targetQty={}, itemCode={}, ppm={}, rawBody={}",
+                factory, line, lineGroup, action, orderNo, targetQty, itemCode, ppm, req);
 
         // 1) Line-level command (recommended flow)
         if (line != null && action != null && "command".equalsIgnoreCase(tag)) {
@@ -119,7 +122,7 @@ public class CmdController {
                         "reason", "targetQty is required for line commands"
                 ));
             }
-            boolean ok = miloClient.sendLineCommand(line, action, orderNo, targetQty, ppm);
+            boolean ok = miloClient.sendLineCommand(lineGroup, action, orderNo, targetQty, ppm);
             if (ok) {
                 return ResponseEntity.ok(Map.of(
                         "status", "success",
@@ -148,22 +151,18 @@ public class CmdController {
             ));
         }
 
-        String nodePath;
         String machine = stringValue(req.get("machine"));
-        if (machine != null) {
-            if (line != null) {
-                nodePath = line + "." + machine + "." + tag;
-            } else {
-                nodePath = machine + "." + tag;
-            }
-        } else if (line != null) {
-            nodePath = line + "." + tag;
-        } else {
+        String groupForWrite = machine != null
+                ? joinGroup(factory, line, machine)
+                : lineGroup;
+
+        if (groupForWrite == null || groupForWrite.isBlank()) {
             return ResponseEntity.badRequest().body(Map.of(
                     "status", "failed",
                     "reason", "machine or line must be specified"
             ));
         }
+        String nodePath = groupForWrite + "." + tag;
 
         log.info("Command write → {} = {}", nodePath, value);
         boolean ok = miloClient.writeValue(nodePath, value);
@@ -185,7 +184,7 @@ public class CmdController {
     @PostMapping("/machines/command/test/start")
     public ResponseEntity<?> triggerTestStart() {
         String orderNo = "TEST-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
-        boolean ok = miloClient.sendLineCommand("Line01", "START", orderNo, 40, null);
+        boolean ok = miloClient.sendLineCommand(joinGroup("Line01"), "START", orderNo, 40, null);
         if (ok) {
             return ResponseEntity.ok(Map.of(
                     "status", "started",
@@ -201,7 +200,7 @@ public class CmdController {
 
     @PostMapping("/machines/command/test/ack")
     public ResponseEntity<?> triggerTestAck() {
-        boolean ok = miloClient.sendLineCommand("Line01", "ACK", null, null, null);
+        boolean ok = miloClient.sendLineCommand(joinGroup("Line01"), "ACK", null, null, null);
         if (ok) {
             return ResponseEntity.ok(Map.of(
                     "status", "acked"
@@ -215,7 +214,7 @@ public class CmdController {
 
     @PostMapping("/machines/command/test/stop")
     public ResponseEntity<?> triggerTestStop() {
-        boolean ok = miloClient.sendLineCommand("Line01", "STOP", null, null, null);
+        boolean ok = miloClient.sendLineCommand(joinGroup("Line01"), "STOP", null, null, null);
         if (ok) {
             return ResponseEntity.ok(Map.of(
                     "status", "stopped"
@@ -268,5 +267,13 @@ public class CmdController {
 
     private String signatureComponent(Object value) {
         return value == null ? "" : value.toString().trim();
+    }
+
+    private String joinGroup(String... parts) {
+        return Arrays.stream(parts)
+                .filter(part -> part != null && !part.isBlank())
+                .map(String::trim)
+                .reduce((a, b) -> a + "." + b)
+                .orElse("");
     }
 }
