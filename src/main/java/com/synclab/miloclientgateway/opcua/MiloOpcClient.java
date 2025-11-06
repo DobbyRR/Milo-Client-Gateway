@@ -77,6 +77,10 @@ public class MiloOpcClient {
             return;
         }
 
+        if (log.isDebugEnabled()) {
+            log.debug("Discovered OPC nodes: {}", nodeLookup.keySet());
+        }
+
         List<NodeId> nodeIds = targets.stream().map(NodeTarget::nodeId).toList();
         List<DataValue> values = client.readValues(0, TimestampsToReturn.Both, nodeIds).get();
         for (int i = 0; i < targets.size(); i++) {
@@ -110,9 +114,9 @@ public class MiloOpcClient {
 
         List<String> currentPath = new ArrayList<>(parentPath);
         String nodeName = currentNode.getBrowseName().getName();
-        String parentGroup = String.join(".", parentPath);
-        if (!nodeName.equals(parentGroup)) {
-            currentPath.add(nodeName);
+        String normalizedName = normalizeGroupName(nodeName);
+        if (!normalizedName.isEmpty()) {
+            currentPath.add(normalizedName);
         }
         String group = String.join(".", currentPath);
 
@@ -139,6 +143,14 @@ public class MiloOpcClient {
         return trimLeadingDot(trimmed);
     }
 
+    private String normalizeGroupName(String browseName) {
+        if (browseName == null) {
+            return "";
+        }
+        int idx = browseName.lastIndexOf('.');
+        return idx >= 0 ? browseName.substring(idx + 1) : browseName;
+    }
+
     private String stripRepeatedPrefix(String value, String prefix) {
         if (prefix == null || prefix.isEmpty()) {
             return value;
@@ -163,6 +175,8 @@ public class MiloOpcClient {
         NodeId previous = nodeLookup.put(key, nodeId);
         if (previous != null && !previous.equals(nodeId)) {
             log.debug("Node mapping for {} replaced ({} -> {}).", key, previous, nodeId);
+        } else {
+            log.debug("Registered node {}.{} ({})", group, tag, nodeId);
         }
     }
 
