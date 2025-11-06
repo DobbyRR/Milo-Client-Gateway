@@ -104,24 +104,29 @@ public class CmdController {
 
         // 1) Line-level command (recommended flow)
         if (line != null && action != null && "command".equalsIgnoreCase(tag)) {
-            if (itemCode == null) {
-                return ResponseEntity.badRequest().body(Map.of(
-                        "status", "failed",
-                        "reason", "itemCode is required"
-                ));
+            boolean isStart = "START".equalsIgnoreCase(action);
+
+            if (isStart) {
+                if (itemCode == null) {
+                    return ResponseEntity.badRequest().body(Map.of(
+                            "status", "failed",
+                            "reason", "itemCode is required for START"
+                    ));
+                }
+                if (orderNo == null) {
+                    return ResponseEntity.badRequest().body(Map.of(
+                            "status", "failed",
+                            "reason", "orderNo is required for START"
+                    ));
+                }
+                if (targetQty == null) {
+                    return ResponseEntity.badRequest().body(Map.of(
+                            "status", "failed",
+                            "reason", "targetQty is required for START"
+                    ));
+                }
             }
-            if (orderNo == null) {
-                return ResponseEntity.badRequest().body(Map.of(
-                        "status", "failed",
-                        "reason", "orderNo is required for line commands"
-                ));
-            }
-            if (targetQty == null) {
-                return ResponseEntity.badRequest().body(Map.of(
-                        "status", "failed",
-                        "reason", "targetQty is required for line commands"
-                ));
-            }
+
             boolean ok = miloClient.sendLineCommand(lineGroup, action, orderNo, targetQty, ppm);
             if (ok) {
                 return ResponseEntity.ok(Map.of(
