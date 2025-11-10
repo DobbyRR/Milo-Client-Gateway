@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
@@ -14,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.GZIPOutputStream;
 
 @Slf4j
@@ -42,6 +44,8 @@ public class MesApiService {
      * @param tagName     ex) "Temperature"
      * @param value       ex) 24.5
      */
+    private final Map<String, AggregateBucket> energyAggregationBuckets = new ConcurrentHashMap<>();
+
     public void sendMachineData(String machineName, String tagName, Object value) {
         Map<String, Object> payload = buildPayload(machineName, tagName, value);
 
@@ -51,23 +55,13 @@ public class MesApiService {
             return;
         }
 
-        Map<String, Object> requestBody = Map.of(
-                "records", List.of(Map.of("value", filteredPayload.get()))
-        );
+        if (shouldAggregate(tagName)
+                && pipelineProperties.getEnergyAggregation().isEnabled()) {
+            bufferEnergyUsage(machineName, tagName, filteredPayload.get());
+            return;
+        }
 
-        byte[] requestPayload = serialize(requestBody);
-        requestPayload = applyCompressionIfNecessary(requestPayload);
-
-        kafkaTemplate
-                .send(kafkaProperties.getTopic(), buildRecordKey(machineName, tagName), requestPayload)
-                .whenComplete((result, throwable) -> {
-                    if (throwable != null) {
-                        log.error("Failed to send data to Kafka topic {}: {}", kafkaProperties.getTopic(), throwable.getMessage(), throwable);
-                    } else if (result != null) {
-                        log.info("Published telemetry to Kafka → {}.{} partition={} offset={}",
-                                machineName, tagName, result.getRecordMetadata().partition(), result.getRecordMetadata().offset());
-                    }
-                });
+        sendPayload(machineName, tagName, filteredPayload.get());
     }
 
     private String buildRecordKey(String machineName, String tagName) {
@@ -170,6 +164,90 @@ public class MesApiService {
             return baos.toByteArray();
         } catch (IOException e) {
             throw new IllegalStateException("Failed to gzip MES payload", e);
+        }
+    }
+
+    private boolean shouldAggregate(String tagName) {
+        return tagName != null && tagName.endsWith("energy_usage");
+    }
+
+    private void bufferEnergyUsage(String machineName, String tagName, Map<String, Object> payload) {
+        Object value = payload.get("value");
+        if (!(value instanceof Number number)) {
+            log.debug("Cannot aggregate non-numeric energy_usage for {}.{}", machineName, tagName);
+            sendPayload(machineName, tagName, payload);
+            return;
+        }
+        String key = buildRecordKey(machineName, tagName);
+        energyAggregationBuckets.compute(key, (k, bucket) -> {
+            if (bucket == null) {
+                bucket = new AggregateBucket(machineName, tagName);
+            }
+            bucket.add(number.doubleValue());
+            return bucket;
+        });
+    }
+
+    @Scheduled(fixedRateString = "${mes.pipeline.energy-aggregation.window-ms:10000}")
+    public void flushEnergyAggregation() {
+        MesPipelineProperties.EnergyAggregationProperties aggregation = pipelineProperties.getEnergyAggregation();
+        if (!aggregation.isEnabled()) {
+            if (!energyAggregationBuckets.isEmpty()) {
+                energyAggregationBuckets.clear();
+            }
+            return;
+        }
+
+        Map<String, AggregateBucket> snapshot = new HashMap<>(energyAggregationBuckets);
+        energyAggregationBuckets.clear();
+
+        snapshot.values().forEach(bucket -> {
+            if (bucket.count == 0) {
+                return;
+            }
+            double average = bucket.sum / bucket.count;
+            Map<String, Object> aggregatedPayload = buildPayload(bucket.machineName, bucket.tagName, average);
+            aggregatedPayload.put("aggregated", true);
+            aggregatedPayload.put("sampleCount", bucket.count);
+            aggregatedPayload.put("windowMs", aggregation.getWindowMs());
+            sendPayload(bucket.machineName, bucket.tagName, aggregatedPayload);
+        });
+    }
+
+    private void sendPayload(String machineName, String tagName, Map<String, Object> payload) {
+        Map<String, Object> body = Map.of(
+                "records", List.of(Map.of("value", payload))
+        );
+
+        byte[] requestPayload = serialize(body);
+        requestPayload = applyCompressionIfNecessary(requestPayload);
+
+        kafkaTemplate
+                .send(kafkaProperties.getTopic(), buildRecordKey(machineName, tagName), requestPayload)
+                .whenComplete((result, throwable) -> {
+                    if (throwable != null) {
+                        log.error("Failed to send data to Kafka topic {}: {}", kafkaProperties.getTopic(), throwable.getMessage(), throwable);
+                    } else if (result != null) {
+                        log.info("Published telemetry to Kafka → {}.{} partition={} offset={}",
+                                machineName, tagName, result.getRecordMetadata().partition(), result.getRecordMetadata().offset());
+                    }
+                });
+    }
+
+    private static final class AggregateBucket {
+        private final String machineName;
+        private final String tagName;
+        private double sum;
+        private long count;
+
+        private AggregateBucket(String machineName, String tagName) {
+            this.machineName = machineName;
+            this.tagName = tagName;
+        }
+
+        private void add(double value) {
+            this.sum += value;
+            this.count++;
         }
     }
 }
