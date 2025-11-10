@@ -16,6 +16,7 @@ public class MesPipelineProperties {
 
     private final FilterProperties filter = new FilterProperties();
     private final CompressionProperties compression = new CompressionProperties();
+    private final EnergyAggregationProperties energyAggregation = new EnergyAggregationProperties();
 
     @Getter
     @Setter
@@ -38,5 +39,12 @@ public class MesPipelineProperties {
 
     public enum CompressionAlgorithm {
         GZIP
+    }
+
+    @Getter
+    @Setter
+    public static class EnergyAggregationProperties {
+        private boolean enabled = false;
+        private long windowMs = 10_000;
     }
 }
