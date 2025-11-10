@@ -60,7 +60,6 @@ public class MesApiService {
 
         kafkaTemplate
                 .send(kafkaProperties.getTopic(), buildRecordKey(machineName, tagName), requestPayload)
-                .completable()
                 .whenComplete((result, throwable) -> {
                     if (throwable != null) {
                         log.error("Failed to send data to Kafka topic {}: {}", kafkaProperties.getTopic(), throwable.getMessage(), throwable);
