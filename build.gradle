@@ -28,6 +28,7 @@ dependencies {
 
     // Spring Boot
     implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.kafka:spring-kafka'
 
     // Eclipse Milo
     implementation 'org.eclipse.milo:sdk-client:0.6.12'

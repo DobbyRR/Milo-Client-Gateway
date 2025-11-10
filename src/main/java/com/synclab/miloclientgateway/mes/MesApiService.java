@@ -3,18 +3,11 @@ package com.synclab.miloclientgateway.mes;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.web.client.RestTemplateBuilder;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClientException;
-import org.springframework.web.client.RestTemplate;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.time.Duration;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,22 +20,19 @@ import java.util.zip.GZIPOutputStream;
 @Service
 public class MesApiService {
 
-    private final RestTemplate restTemplate;
-    private final KafkaBridgeProperties kafkaBridgeProperties;
+    private final KafkaTemplate<String, byte[]> kafkaTemplate;
+    private final KafkaProducerProperties kafkaProperties;
     private final MesPipelineProperties pipelineProperties;
     private final ObjectMapper objectMapper;
 
-    public MesApiService(KafkaBridgeProperties kafkaBridgeProperties,
+    public MesApiService(KafkaProducerProperties kafkaProperties,
                          MesPipelineProperties pipelineProperties,
-                         RestTemplateBuilder restTemplateBuilder,
-                         ObjectMapper objectMapper) {
-        this.kafkaBridgeProperties = kafkaBridgeProperties;
+                         ObjectMapper objectMapper,
+                         KafkaTemplate<String, byte[]> kafkaTemplate) {
+        this.kafkaProperties = kafkaProperties;
         this.pipelineProperties = pipelineProperties;
         this.objectMapper = objectMapper;
-        this.restTemplate = restTemplateBuilder
-                .setConnectTimeout(Duration.ofSeconds(5))
-                .setReadTimeout(Duration.ofSeconds(5))
-                .build();
+        this.kafkaTemplate = kafkaTemplate;
     }
 
     /**
@@ -65,29 +55,24 @@ public class MesApiService {
                 "records", List.of(Map.of("value", filteredPayload.get()))
         );
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-
         byte[] requestPayload = serialize(requestBody);
-        requestPayload = applyCompressionIfNecessary(requestPayload, headers);
+        requestPayload = applyCompressionIfNecessary(requestPayload);
 
-        HttpEntity<byte[]> request = new HttpEntity<>(requestPayload, headers);
+        kafkaTemplate
+                .send(kafkaProperties.getTopic(), buildRecordKey(machineName, tagName), requestPayload)
+                .completable()
+                .whenComplete((result, throwable) -> {
+                    if (throwable != null) {
+                        log.error("Failed to send data to Kafka topic {}: {}", kafkaProperties.getTopic(), throwable.getMessage(), throwable);
+                    } else if (result != null) {
+                        log.info("Published telemetry to Kafka → {}.{} partition={} offset={}",
+                                machineName, tagName, result.getRecordMetadata().partition(), result.getRecordMetadata().offset());
+                    }
+                });
+    }
 
-        try {
-            ResponseEntity<String> response = restTemplate.postForEntity(
-                    kafkaBridgeProperties.topicUri(),
-                    request,
-                    String.class
-            );
-
-            if (response.getStatusCode().is2xxSuccessful()) {
-                log.info("Published telemetry via Kafka Bridge → {}.{} = {}", machineName, tagName, value);
-            } else {
-                log.warn("Kafka Bridge responded with status {} and body {}", response.getStatusCode(), response.getBody());
-            }
-        } catch (RestClientException e) {
-            log.error("Failed to send data to Kafka Bridge: {}", e.getMessage(), e);
-        }
+    private String buildRecordKey(String machineName, String tagName) {
+        return machineName + "." + tagName;
     }
 
     private Map<String, Object> buildPayload(String machineName, String tagName, Object value) {
@@ -165,14 +150,13 @@ public class MesApiService {
         }
     }
 
-    private byte[] applyCompressionIfNecessary(byte[] payload, HttpHeaders headers) {
+    private byte[] applyCompressionIfNecessary(byte[] payload) {
         MesPipelineProperties.CompressionProperties compression = pipelineProperties.getCompression();
         if (!compression.isEnabled()) {
             return payload;
         }
 
         if (compression.getAlgorithm() == MesPipelineProperties.CompressionAlgorithm.GZIP) {
-            headers.add(HttpHeaders.CONTENT_ENCODING, "gzip");
             return gzip(payload);
         }
 
