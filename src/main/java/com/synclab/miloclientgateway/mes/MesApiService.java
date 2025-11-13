@@ -46,30 +46,40 @@ public class MesApiService {
      */
     private static final Set<String> NG_TAGS = Set.of("order_ng_qty", "order_ng_type", "order_ng_name");
     private static final String NG_EVENT_TAG = "order_ng_event";
+    private static final String EQUIPMENT_ID_TAG = "equipment_id";
 
     private final Map<String, AggregateBucket> energyAggregationBuckets = new ConcurrentHashMap<>();
     private final Map<String, NgEventState> ngEventStates = new ConcurrentHashMap<>();
+    private final Map<String, String> equipmentIdByMachine = new ConcurrentHashMap<>();
 
     public void sendMachineData(String machineName, String tagName, Object value) {
         Map<String, Object> payload = buildPayload(machineName, tagName, value);
 
-        Optional<Map<String, Object>> filteredPayload = applyFiltering(payload);
-        if (filteredPayload.isEmpty()) {
+        Optional<Map<String, Object>> filteredPayloadOpt = applyFiltering(payload);
+        if (filteredPayloadOpt.isEmpty()) {
             log.debug("Dropped telemetry {}.{} due to filtering", machineName, tagName);
             return;
         }
+        Map<String, Object> filteredPayload = filteredPayloadOpt.get();
 
-        if (handleNgTelemetry(machineName, tagName, filteredPayload.get())) {
+        if (isEquipmentIdTag(tagName)) {
+            Object equipmentId = filteredPayload.get("value");
+            if (equipmentId != null && !equipmentId.toString().isBlank()) {
+                equipmentIdByMachine.put(machineName, equipmentId.toString());
+            }
+        }
+
+        if (handleNgTelemetry(machineName, tagName, filteredPayload)) {
             return;
         }
 
         if (shouldAggregate(tagName)
                 && pipelineProperties.getEnergyAggregation().isEnabled()) {
-            bufferEnergyUsage(machineName, tagName, filteredPayload.get());
+            bufferEnergyUsage(machineName, tagName, filteredPayload);
             return;
         }
 
-        sendPayload(machineName, tagName, filteredPayload.get());
+        sendPayload(machineName, tagName, filteredPayload);
     }
 
     private String buildRecordKey(String machineName, String tagName) {
@@ -256,6 +266,14 @@ public class MesApiService {
                 || NG_EVENT_TAG.equalsIgnoreCase(tagName);
     }
 
+    private boolean isEquipmentIdTag(String tagName) {
+        return tagName != null && EQUIPMENT_ID_TAG.equalsIgnoreCase(tagName);
+    }
+
+    private String resolveEquipmentId(String machineName) {
+        return equipmentIdByMachine.getOrDefault(machineName, machineName);
+    }
+
     private boolean handleNgTelemetry(String machineName, String tagName, Map<String, Object> payload) {
         if (tagName == null) {
             return false;
@@ -293,7 +311,7 @@ public class MesApiService {
         }
 
         Map<String, Object> ngPayload = new LinkedHashMap<>();
-        ngPayload.put("equipmentId", machineName);
+        ngPayload.put("equipmentId", resolveEquipmentId(machineName));
         ngPayload.put("ng_type", state.getNgType());
         ngPayload.put("ng_name", state.getNgName());
         ngPayload.put("ng_qty", state.getNgQty());
