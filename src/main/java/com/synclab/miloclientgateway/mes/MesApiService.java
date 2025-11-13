@@ -46,11 +46,11 @@ public class MesApiService {
      */
     private static final Set<String> NG_TAGS = Set.of("order_ng_qty", "order_ng_type", "order_ng_name");
     private static final String NG_EVENT_TAG = "order_ng_event";
-    private static final String EQUIPMENT_ID_TAG = "equipment_id";
+    private static final String EQUIPMENT_CODE_TAG = "equipment_code";
 
     private final Map<String, AggregateBucket> energyAggregationBuckets = new ConcurrentHashMap<>();
     private final Map<String, NgEventState> ngEventStates = new ConcurrentHashMap<>();
-    private final Map<String, String> equipmentIdByMachine = new ConcurrentHashMap<>();
+    private final Map<String, String> equipmentCodeByMachine = new ConcurrentHashMap<>();
 
     public void sendMachineData(String machineName, String tagName, Object value) {
         Map<String, Object> payload = buildPayload(machineName, tagName, value);
@@ -62,10 +62,10 @@ public class MesApiService {
         }
         Map<String, Object> filteredPayload = filteredPayloadOpt.get();
 
-        if (isEquipmentIdTag(tagName)) {
-            Object equipmentId = filteredPayload.get("value");
-            if (equipmentId != null && !equipmentId.toString().isBlank()) {
-                equipmentIdByMachine.put(machineName, equipmentId.toString());
+        if (isEquipmentCodeTag(tagName)) {
+            Object equipmentCode = filteredPayload.get("value");
+            if (equipmentCode != null && !equipmentCode.toString().isBlank()) {
+                equipmentCodeByMachine.put(machineName, equipmentCode.toString());
             }
         }
 
@@ -266,12 +266,12 @@ public class MesApiService {
                 || NG_EVENT_TAG.equalsIgnoreCase(tagName);
     }
 
-    private boolean isEquipmentIdTag(String tagName) {
-        return tagName != null && EQUIPMENT_ID_TAG.equalsIgnoreCase(tagName);
+    private boolean isEquipmentCodeTag(String tagName) {
+        return tagName != null && EQUIPMENT_CODE_TAG.equalsIgnoreCase(tagName);
     }
 
-    private String resolveEquipmentId(String machineName) {
-        return equipmentIdByMachine.getOrDefault(machineName, machineName);
+    private String resolveEquipmentCode(String machineName) {
+        return equipmentCodeByMachine.getOrDefault(machineName, machineName);
     }
 
     private boolean handleNgTelemetry(String machineName, String tagName, Map<String, Object> payload) {
@@ -311,7 +311,7 @@ public class MesApiService {
         }
 
         Map<String, Object> ngPayload = new LinkedHashMap<>();
-        ngPayload.put("equipmentId", resolveEquipmentId(machineName));
+        ngPayload.put("equipmentCode", resolveEquipmentCode(machineName));
         ngPayload.put("ng_type", state.getNgType());
         ngPayload.put("ng_name", state.getNgName());
         ngPayload.put("ng_qty", state.getNgQty());
