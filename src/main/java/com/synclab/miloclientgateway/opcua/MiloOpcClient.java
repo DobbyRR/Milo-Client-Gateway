@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicLong;
 @Component
 public class MiloOpcClient {
 
-    private static final String ENDPOINT = "opc.tcp://192.168.0.51:4840/milo";
+    private static final String ENDPOINT = "opc.tcp://192.168.0.18:4840/milo";
     private static final double DEFAULT_SAMPLING_INTERVAL = 1000.0;
 
     private final AtomicLong clientHandleSeq = new AtomicLong(1);
@@ -87,7 +87,7 @@ public class MiloOpcClient {
             NodeTarget target = targets.get(i);
             Object payload = extractVariant(values.get(i));
             mesApiService.sendMachineData(target.group(), target.tag(), payload);
-            log.info("SNAPSHOT {}.{} = {}", target.group(), target.tag(), payload);
+            log.debug("SNAPSHOT {}.{} = {}", target.group(), target.tag(), payload);
         }
 
         UaSubscription sub = client.getSubscriptionManager().createSubscription(DEFAULT_SAMPLING_INTERVAL).get();
@@ -201,7 +201,7 @@ public class MiloOpcClient {
             UaSubscription.ItemCreationCallback callback = (item, id) ->
                     item.setValueConsumer((it, value) -> {
                         Object payload = extractVariant(value);
-                        log.info("MONITOR {} -> {} (status={}, sourceTs={}, serverTs={})",
+                        log.debug("MONITOR {} -> {} (status={}, sourceTs={}, serverTs={})",
                                 label,
                                 payload,
                                 value != null ? value.getStatusCode() : null,
@@ -215,7 +215,7 @@ public class MiloOpcClient {
 
             List<UaMonitoredItem> items = sub.createMonitoredItems(TimestampsToReturn.Both, List.of(request), callback).get();
             for (UaMonitoredItem item : items) {
-                log.info("Subscribed {} (status={})", label, item.getStatusCode());
+                log.debug("Subscribed {} (status={})", label, item.getStatusCode());
             }
         } catch (Exception e) {
             log.error("Subscription failed for {}: {}", label, e.getMessage(), e);

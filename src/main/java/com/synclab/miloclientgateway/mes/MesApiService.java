@@ -44,7 +44,11 @@ public class MesApiService {
      * @param tagName     ex) "Temperature"
      * @param value       ex) 24.5
      */
+    private static final Set<String> NG_TAGS = Set.of("order_ng_qty", "order_ng_type", "order_ng_name");
+    private static final String NG_EVENT_TAG = "order_ng_event";
+
     private final Map<String, AggregateBucket> energyAggregationBuckets = new ConcurrentHashMap<>();
+    private final Map<String, NgEventState> ngEventStates = new ConcurrentHashMap<>();
 
     public void sendMachineData(String machineName, String tagName, Object value) {
         Map<String, Object> payload = buildPayload(machineName, tagName, value);
@@ -52,6 +56,10 @@ public class MesApiService {
         Optional<Map<String, Object>> filteredPayload = applyFiltering(payload);
         if (filteredPayload.isEmpty()) {
             log.debug("Dropped telemetry {}.{} due to filtering", machineName, tagName);
+            return;
+        }
+
+        if (handleNgTelemetry(machineName, tagName, filteredPayload.get())) {
             return;
         }
 
@@ -228,10 +236,81 @@ public class MesApiService {
                     if (throwable != null) {
                         log.error("Failed to send data to Kafka topic {}: {}", kafkaProperties.getTopic(), throwable.getMessage(), throwable);
                     } else if (result != null) {
-                        log.info("Published telemetry to Kafka → {}.{} partition={} offset={}",
-                                machineName, tagName, result.getRecordMetadata().partition(), result.getRecordMetadata().offset());
+                        Object value = payload.containsKey("value") ? payload.get("value") : payload;
+                        if (shouldEmitValueLog(tagName)) {
+                            log.info("Kafka upload [{}] value={}", tagName, value);
+                        } else if (log.isDebugEnabled()) {
+                            log.debug("Published telemetry → {}.{} partition={} offset={}",
+                                    machineName, tagName, result.getRecordMetadata().partition(), result.getRecordMetadata().offset());
+                        }
                     }
                 });
+    }
+
+    private boolean shouldEmitValueLog(String tagName) {
+        if (tagName == null) {
+            return false;
+        }
+        return tagName.endsWith("energy_usage")
+                || NG_TAGS.contains(tagName.toLowerCase())
+                || NG_EVENT_TAG.equalsIgnoreCase(tagName);
+    }
+
+    private boolean handleNgTelemetry(String machineName, String tagName, Map<String, Object> payload) {
+        if (tagName == null) {
+            return false;
+        }
+        String normalized = tagName.toLowerCase();
+        if (!NG_TAGS.contains(normalized)) {
+            return false;
+        }
+        Object value = payload.get("value");
+        if (value == null) {
+            return true;
+        }
+
+        NgEventState state = ngEventStates.computeIfAbsent(machineName, key -> new NgEventState());
+
+        synchronized (state) {
+            switch (normalized) {
+                case "order_ng_qty" -> state.setNgQty(toInteger(value));
+                case "order_ng_type" -> state.setNgType(toInteger(value));
+                case "order_ng_name" -> state.setNgName(value.toString());
+            }
+
+            if (state.isComplete()) {
+                emitNgEvent(machineName, state);
+            }
+        }
+        return true;
+    }
+
+    private void emitNgEvent(String machineName, NgEventState state) {
+        if (!state.canUpload()) {
+            log.debug("Skipping NG event for {} due to empty name or non-positive qty (name={}, qty={})",
+                    machineName, state.getNgName(), state.getNgQty());
+            return;
+        }
+
+        Map<String, Object> ngPayload = new LinkedHashMap<>();
+        ngPayload.put("equipmentId", machineName);
+        ngPayload.put("ng_type", state.getNgType());
+        ngPayload.put("ng_name", state.getNgName());
+        ngPayload.put("ng_qty", state.getNgQty());
+
+        sendPayload(machineName, NG_EVENT_TAG, ngPayload);
+    }
+
+    private Integer toInteger(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return Integer.parseInt(value.toString());
+        } catch (NumberFormatException e) {
+            log.debug("Unable to parse NG numeric value: {}", value);
+            return null;
+        }
     }
 
     private static final class AggregateBucket {
@@ -248,6 +327,46 @@ public class MesApiService {
         private void add(double value) {
             this.sum += value;
             this.count++;
+        }
+    }
+
+    private static final class NgEventState {
+        private Integer ngQty;
+        private Integer ngType;
+        private String ngName;
+
+        private void setNgQty(Integer ngQty) {
+            this.ngQty = ngQty;
+        }
+
+        private void setNgType(Integer ngType) {
+            this.ngType = ngType;
+        }
+
+        private void setNgName(String ngName) {
+            this.ngName = ngName;
+        }
+
+        private Integer getNgQty() {
+            return ngQty;
+        }
+
+        private Integer getNgType() {
+            return ngType;
+        }
+
+        private String getNgName() {
+            return ngName;
+        }
+
+        private boolean isComplete() {
+            return ngQty != null && ngType != null && ngName != null;
+        }
+
+        private boolean canUpload() {
+            return ngName != null && !ngName.isBlank()
+                    && ngQty != null && ngQty > 0
+                    && ngType != null;
         }
     }
 }
