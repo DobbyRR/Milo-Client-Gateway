@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,7 +54,8 @@ public class MesApiService {
     private final Map<String, String> equipmentCodeByMachine = new ConcurrentHashMap<>();
 
     public void sendMachineData(String machineName, String tagName, Object value) {
-        Map<String, Object> payload = buildPayload(machineName, tagName, value);
+        Object normalizedValue = normalizeTelemetryValue(tagName, value);
+        Map<String, Object> payload = buildPayload(machineName, tagName, normalizedValue);
 
         Optional<Map<String, Object>> filteredPayloadOpt = applyFiltering(payload);
         if (filteredPayloadOpt.isEmpty()) {
@@ -80,6 +82,51 @@ public class MesApiService {
         }
 
         sendPayload(machineName, tagName, filteredPayload);
+    }
+
+    private Object normalizeTelemetryValue(String tagName, Object value) {
+        if (!isPayloadTag(tagName) || value == null) {
+            return value;
+        }
+        Object decoded = decodePayloadValue(value);
+        return decoded != null ? decoded : value;
+    }
+
+    private boolean isPayloadTag(String tagName) {
+        if (tagName == null) {
+            return false;
+        }
+        String normalized = tagName.toLowerCase();
+        return normalized.contains("payload");
+    }
+
+    private Object decodePayloadValue(Object value) {
+        if (value instanceof String s) {
+            return parseJsonPayload(s);
+        }
+        if (value instanceof byte[] bytes) {
+            return parseJsonPayload(new String(bytes, StandardCharsets.UTF_8));
+        }
+        return value;
+    }
+
+    private Object parseJsonPayload(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) {
+            return trimmed;
+        }
+        try {
+            return objectMapper.readValue(trimmed, Object.class);
+        } catch (JsonProcessingException e) {
+            log.warn("Unable to parse alarm payload JSON: {}", e.getMessage());
+            return trimmed;
+        }
     }
 
     private String buildRecordKey(String machineName, String tagName) {
@@ -261,7 +308,8 @@ public class MesApiService {
         if (tagName == null) {
             return false;
         }
-        return tagName.endsWith("energy_usage")
+        return isPayloadTag(tagName)
+                || tagName.endsWith("energy_usage")
                 || NG_TAGS.contains(tagName.toLowerCase())
                 || NG_EVENT_TAG.equalsIgnoreCase(tagName);
     }
