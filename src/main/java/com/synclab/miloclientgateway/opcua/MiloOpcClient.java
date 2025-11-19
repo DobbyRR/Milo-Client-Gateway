@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicLong;
 @Component
 public class MiloOpcClient {
 
-    private static final String ENDPOINT = "opc.tcp://192.168.0.3:4840/milo";
+    private static final String ENDPOINT = "opc.tcp://192.168.0.23:4840/milo";
     private static final double DEFAULT_SAMPLING_INTERVAL = 1000.0;
 
     private final AtomicLong clientHandleSeq = new AtomicLong(1);
@@ -91,6 +91,8 @@ public class MiloOpcClient {
             mesApiService.sendMachineData(target.group(), target.tag(), payload);
             if (isPayloadTag(target.tag())) {
                 log.info("SNAPSHOT PAYLOAD {}.{} = {}", target.group(), target.tag(), payload);
+            } else if (isItemCodeTag(target.tag())) {
+                log.info("SNAPSHOT ITEM CODE {}.{} = {}", target.group(), target.tag(), payload);
             } else {
                 log.debug("SNAPSHOT {}.{} = {}", target.group(), target.tag(), payload);
             }
@@ -216,6 +218,8 @@ public class MiloOpcClient {
 
                         if (payload != null && isPayloadTag(target.tag())) {
                             log.info("ALARM PAYLOAD {} = {}", label, payload);
+                        } else if (payload != null && isItemCodeTag(target.tag())) {
+                            log.info("ITEM CODE UPDATE {} = {}", label, payload);
                         }
 
                         if (payload != null) {
@@ -291,11 +295,20 @@ public class MiloOpcClient {
         return tag != null && tag.toLowerCase().contains("payload");
     }
 
+    private boolean isItemCodeTag(String tag) {
+        if (tag == null) {
+            return false;
+        }
+        String normalized = tag.toLowerCase();
+        return normalized.contains("item_code") || normalized.contains("itemcode");
+    }
+
     public boolean sendLineCommand(String lineName,
                                    String action,
                                    String orderNo,
                                    Integer targetQty,
-                                   Integer ppm) {
+                                   Integer ppm,
+                                   String itemCode) {
         if (lineName == null || lineName.isBlank() || action == null || action.isBlank()) {
             log.warn("Line command requires 'line' and 'action'. line={}, action={}", lineName, action);
             return false;
@@ -310,11 +323,17 @@ public class MiloOpcClient {
                     log.warn("START command requires orderNo and targetQty (line={}).", lineName);
                     return false;
                 }
-                if (ppm != null && ppm > 0) {
-                    command = String.format("START:%s:%d:%d", orderNo, targetQty, ppm);
-                } else {
-                    command = String.format("START:%s:%d", orderNo, targetQty);
+                if (itemCode == null || itemCode.isBlank()) {
+                    log.warn("START command requires itemCode (line={}, orderNo={}).", lineName, orderNo);
+                    return false;
                 }
+                if (ppm != null && ppm > 0) {
+                    command = String.format("START:%s:%d:%s:%d", orderNo, targetQty, itemCode, ppm);
+                } else {
+                    command = String.format("START:%s:%d:%s", orderNo, targetQty, itemCode);
+                }
+                log.info("Preparing START command for {}: orderNo={}, targetQty={}, itemCode={}, ppm={}",
+                        lineName, orderNo, targetQty, itemCode, ppm);
             }
             case "ACK", "STOP", "RESET" -> command = normalizedAction;
             default -> {
@@ -347,6 +366,7 @@ public class MiloOpcClient {
 
         try {
             DataValue value = new DataValue(new Variant(newValue));
+            log.info("OPC WRITE REQUEST {}.{} = {}", group, tag, newValue);
             client.writeValue(nodeId, value).get();
             log.info("Wrote {}.{} = {}", group, tag, newValue);
             return true;
