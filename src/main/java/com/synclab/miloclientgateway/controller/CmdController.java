@@ -101,6 +101,8 @@ public class CmdController {
 
         log.info("MES command received: factory={}, line={}, lineGroup={}, action={}, orderNo={}, targetQty={}, itemCode={}, ppm={}, rawBody={}",
                 factory, line, lineGroup, action, orderNo, targetQty, itemCode, ppm, req);
+        log.info("MES ORDER PAYLOAD: factory={}, line={}, action={}, orderNo={}, targetQty={}, itemCode={}, ppm={}, rawBody={}",
+                factory, line, action, orderNo, targetQty, itemCode, ppm, req);
 
         // 1) Line-level command (recommended flow)
         if (line != null && action != null && "command".equalsIgnoreCase(tag)) {
@@ -127,7 +129,7 @@ public class CmdController {
                 }
             }
 
-            boolean ok = miloClient.sendLineCommand(lineGroup, action, orderNo, targetQty, ppm);
+            boolean ok = miloClient.sendLineCommand(lineGroup, action, orderNo, targetQty, ppm, itemCode);
             if (ok) {
                 return ResponseEntity.ok(Map.of(
                         "status", "success",
@@ -189,7 +191,7 @@ public class CmdController {
     @PostMapping("/machines/command/test/start")
     public ResponseEntity<?> triggerTestStart() {
         String orderNo = "TEST-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
-        boolean ok = miloClient.sendLineCommand(joinGroup("Line01"), "START", orderNo, 40, null);
+        boolean ok = miloClient.sendLineCommand(joinGroup("Line01"), "START", orderNo, 40, null, "TEST-ITEM");
         if (ok) {
             return ResponseEntity.ok(Map.of(
                     "status", "started",
@@ -205,7 +207,7 @@ public class CmdController {
 
     @PostMapping("/machines/command/test/ack")
     public ResponseEntity<?> triggerTestAck() {
-        boolean ok = miloClient.sendLineCommand(joinGroup("Line01"), "ACK", null, null, null);
+        boolean ok = miloClient.sendLineCommand(joinGroup("Line01"), "ACK", null, null, null, null);
         if (ok) {
             return ResponseEntity.ok(Map.of(
                     "status", "acked"
@@ -219,7 +221,7 @@ public class CmdController {
 
     @PostMapping("/machines/command/test/stop")
     public ResponseEntity<?> triggerTestStop() {
-        boolean ok = miloClient.sendLineCommand(joinGroup("Line01"), "STOP", null, null, null);
+        boolean ok = miloClient.sendLineCommand(joinGroup("Line01"), "STOP", null, null, null, null);
         if (ok) {
             return ResponseEntity.ok(Map.of(
                     "status", "stopped"
