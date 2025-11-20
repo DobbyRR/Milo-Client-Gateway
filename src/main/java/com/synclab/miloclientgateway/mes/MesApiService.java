@@ -45,8 +45,9 @@ public class MesApiService {
      * @param tagName     ex) "Temperature"
      * @param value       ex) 24.5
      */
-    private static final Set<String> NG_TAGS = Set.of("order_ng_qty", "order_ng_type", "order_ng_name");
+    private static final Set<String> NG_TAGS = Set.of("order_ng_qty", "order_ng_type", "order_ng_name", "order_no");
     private static final String NG_EVENT_TAG = "order_ng_event";
+    private static final String NG_PAYLOAD_TAG = "ng_event_payload";
     private static final String EQUIPMENT_CODE_TAG = "equipment_code";
 
     private final Map<String, AggregateBucket> energyAggregationBuckets = new ConcurrentHashMap<>();
@@ -311,7 +312,8 @@ public class MesApiService {
         return isPayloadTag(tagName)
                 || tagName.endsWith("energy_usage")
                 || NG_TAGS.contains(tagName.toLowerCase())
-                || NG_EVENT_TAG.equalsIgnoreCase(tagName);
+                || NG_EVENT_TAG.equalsIgnoreCase(tagName)
+                || NG_PAYLOAD_TAG.equalsIgnoreCase(tagName);
     }
 
     private boolean isEquipmentCodeTag(String tagName) {
@@ -327,6 +329,11 @@ public class MesApiService {
             return false;
         }
         String normalized = tagName.toLowerCase();
+        if (NG_PAYLOAD_TAG.equals(normalized)) {
+            Object value = payload.get("value");
+            handleNgPayload(machineName, value);
+            return true;
+        }
         if (!NG_TAGS.contains(normalized)) {
             return false;
         }
@@ -342,6 +349,7 @@ public class MesApiService {
                 case "order_ng_qty" -> state.setNgQty(toInteger(value));
                 case "order_ng_type" -> state.setNgType(toInteger(value));
                 case "order_ng_name" -> state.setNgName(value.toString());
+                case "order_no" -> state.setOrderNo(value.toString());
             }
 
             if (state.isComplete()) {
@@ -349,6 +357,44 @@ public class MesApiService {
             }
         }
         return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleNgPayload(String machineName, Object value) {
+        if (!(value instanceof Map<?, ?> map)) {
+            log.debug("Ignoring NG payload for {} because value is not a Map: {}", machineName, value);
+            return;
+        }
+
+        NgEventState state = ngEventStates.computeIfAbsent(machineName, key -> new NgEventState());
+
+        synchronized (state) {
+            Object qty = map.get("ng_qty");
+            if (qty != null) {
+                state.setNgQty(toInteger(qty));
+            }
+            Object type = map.get("ng_type");
+            if (type != null) {
+                state.setNgType(toInteger(type));
+            }
+            Object name = map.get("ng_name");
+            if (name != null) {
+                state.setNgName(name.toString());
+            }
+            Object orderNo = map.get("order_no");
+            if (orderNo != null) {
+                state.setOrderNo(orderNo.toString());
+            }
+
+            Object equipmentCode = map.get("equipmentCode");
+            if (equipmentCode != null && !equipmentCode.toString().isBlank()) {
+                equipmentCodeByMachine.put(machineName, equipmentCode.toString());
+            }
+
+            if (state.isComplete()) {
+                emitNgEvent(machineName, state);
+            }
+        }
     }
 
     private void emitNgEvent(String machineName, NgEventState state) {
@@ -363,6 +409,9 @@ public class MesApiService {
         ngPayload.put("ng_type", state.getNgType());
         ngPayload.put("ng_name", state.getNgName());
         ngPayload.put("ng_qty", state.getNgQty());
+        if (state.getOrderNo() != null && !state.getOrderNo().isBlank()) {
+            ngPayload.put("order_no", state.getOrderNo());
+        }
 
         sendPayload(machineName, NG_EVENT_TAG, ngPayload);
     }
@@ -400,6 +449,7 @@ public class MesApiService {
         private Integer ngQty;
         private Integer ngType;
         private String ngName;
+        private String orderNo;
 
         private void setNgQty(Integer ngQty) {
             this.ngQty = ngQty;
@@ -411,6 +461,10 @@ public class MesApiService {
 
         private void setNgName(String ngName) {
             this.ngName = ngName;
+        }
+
+        private void setOrderNo(String orderNo) {
+            this.orderNo = orderNo;
         }
 
         private Integer getNgQty() {
@@ -425,14 +479,19 @@ public class MesApiService {
             return ngName;
         }
 
+        private String getOrderNo() {
+            return orderNo;
+        }
+
         private boolean isComplete() {
-            return ngQty != null && ngType != null && ngName != null;
+            return ngQty != null && ngType != null && ngName != null && orderNo != null && !orderNo.isBlank();
         }
 
         private boolean canUpload() {
             return ngName != null && !ngName.isBlank()
                     && ngQty != null && ngQty > 0
-                    && ngType != null;
+                    && ngType != null
+                    && orderNo != null && !orderNo.isBlank();
         }
     }
 }

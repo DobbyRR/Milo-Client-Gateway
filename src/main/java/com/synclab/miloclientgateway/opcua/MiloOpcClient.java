@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicLong;
 @Component
 public class MiloOpcClient {
 
-    private static final String ENDPOINT = "opc.tcp://192.168.0.23:4840/milo";
+    private static final String ENDPOINT = "opc.tcp://192.168.0.21:4840/milo";
     private static final double DEFAULT_SAMPLING_INTERVAL = 1000.0;
 
     private final AtomicLong clientHandleSeq = new AtomicLong(1);
