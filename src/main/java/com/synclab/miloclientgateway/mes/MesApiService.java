@@ -328,6 +328,9 @@ public class MesApiService {
         if (tagName == null) {
             return false;
         }
+        if (isNgSuppressedMachine(machineName)) {
+            return true;
+        }
         String normalized = tagName.toLowerCase();
         if (NG_PAYLOAD_TAG.equals(normalized)) {
             Object value = payload.get("value");
@@ -357,6 +360,14 @@ public class MesApiService {
             }
         }
         return true;
+    }
+
+    private boolean isNgSuppressedMachine(String machineName) {
+        if (machineName == null) {
+            return false;
+        }
+        String lower = machineName.toLowerCase();
+        return lower.contains("traycleaner");
     }
 
     @SuppressWarnings("unchecked")
