@@ -34,11 +34,15 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * Milo-Server OPC AddressSpace를 순회해 factory.line.machine.tag 매핑을 캐시하고,
+ * CtrlLine 문서에 기술된 snapshot + subscription 방식으로 Kafka 전송/명령 쓰기를 담당한다.
+ */
 @Slf4j
 @Component
 public class MiloOpcClient {
 
-    private static final String ENDPOINT = "opc.tcp://192.168.0.34:4840/milo";
+    private static final String ENDPOINT = "opc.tcp://192.168.0.35:4840/milo";
     private static final double DEFAULT_SAMPLING_INTERVAL = 1000.0;
 
     private final AtomicLong clientHandleSeq = new AtomicLong(1);
@@ -84,6 +88,7 @@ public class MiloOpcClient {
         }
 
         List<NodeId> nodeIds = targets.stream().map(NodeTarget::nodeId).toList();
+        // 문서에서 언급한 "기동 시 스냅샷" 단계: 전체 Node 값을 한 번 읽어 MES로 전달
         List<DataValue> values = client.readValues(0, TimestampsToReturn.Both, nodeIds).get();
         for (int i = 0; i < targets.size(); i++) {
             NodeTarget target = targets.get(i);
@@ -98,6 +103,7 @@ public class MiloOpcClient {
             }
         }
 
+        // 이후에는 1초 샘플링 구독으로 모든 telemetry 변화를 실시간 수신한다.
         UaSubscription sub = client.getSubscriptionManager().createSubscription(DEFAULT_SAMPLING_INTERVAL).get();
         for (NodeTarget target : targets) {
             subscribeNode(sub, target);
@@ -113,6 +119,10 @@ public class MiloOpcClient {
                 .orElseThrow(() -> new IllegalStateException("Machines folder not found in namespace."));
     }
 
+    /**
+     * /Objects/Machines 트리를 깊이 우선 탐색해 factory.line.machine.tag 규칙을 만들어낸다.
+     * CtrlLine에서 설명한 group/tag 명명 규칙이 바로 이 메서드의 결과다.
+     */
     private void collectGroupNodes(UaNode currentNode,
                                    List<String> parentPath,
                                    List<NodeTarget> targets) throws Exception {
@@ -206,6 +216,7 @@ public class MiloOpcClient {
             );
             MonitoredItemCreateRequest request = new MonitoredItemCreateRequest(rvid, MonitoringMode.Reporting, params);
 
+            // Kafka → CtrlLine로 흘러가는 모든 telemetry는 이 callback에서 MesApiService로 전달된다.
             UaSubscription.ItemCreationCallback callback = (item, id) ->
                     item.setValueConsumer((it, value) -> {
                         Object payload = extractVariant(value);

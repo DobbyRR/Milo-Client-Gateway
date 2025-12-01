@@ -19,6 +19,10 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.GZIPOutputStream;
 
+/**
+ * CtrlLine 설명 중 "Kafka 업로드 파이프라인"에 해당.
+ * OPC telemetry를 그대로 JSON으로 만들되 NG 이벤트 조합, 에너지 집계, 압축 등을 담당해 MES로 전달한다.
+ */
 @Slf4j
 @Service
 public class MesApiService {
@@ -94,6 +98,7 @@ public class MesApiService {
     }
 
     private boolean isPayloadTag(String tagName) {
+        // CtrlLine에서 강조한 order_ng_event payload를 완성하기 위한 상태 머신
         if (tagName == null) {
             return false;
         }
@@ -144,61 +149,8 @@ public class MesApiService {
     }
 
     private Optional<Map<String, Object>> applyFiltering(Map<String, Object> payload) {
-        MesPipelineProperties.FilterProperties filter = pipelineProperties.getFilter();
-        if (!filter.isEnabled()) {
-            return Optional.of(payload);
-        }
-
-        if (!filter.getAllowedMachines().isEmpty()) {
-            Object machine = payload.get("machine");
-            if (machine == null || !filter.getAllowedMachines().contains(machine.toString())) {
-                return Optional.empty();
-            }
-        }
-
-        Object tag = payload.get("tag");
-        if (!filter.getAllowedTags().isEmpty()) {
-            if (tag == null || !filter.getAllowedTags().contains(tag.toString())) {
-                return Optional.empty();
-            }
-        }
-
-        if (tag != null && (!filter.getAllowedTagSuffixes().isEmpty() || !filter.getAllowedTagKeywords().isEmpty())) {
-            String tagValue = tag.toString();
-            boolean suffixMatch = filter.getAllowedTagSuffixes().isEmpty() ||
-                    filter.getAllowedTagSuffixes().stream().anyMatch(tagValue::endsWith);
-            boolean keywordMatch = filter.getAllowedTagKeywords().isEmpty() ||
-                    filter.getAllowedTagKeywords().stream().anyMatch(tagValue::contains);
-
-            if (!(suffixMatch && keywordMatch)) {
-                return Optional.empty();
-            }
-        } else if (tag == null && (!filter.getAllowedTagSuffixes().isEmpty() || !filter.getAllowedTagKeywords().isEmpty())) {
-            return Optional.empty();
-        }
-
-        Map<String, Object> filteredPayload;
-        if (!filter.getIncludeFields().isEmpty()) {
-            filteredPayload = new LinkedHashMap<>();
-            Set<String> includeFields = Set.copyOf(filter.getIncludeFields());
-            payload.forEach((key, value) -> {
-                if (includeFields.contains(key)) {
-                    filteredPayload.put(key, value);
-                }
-            });
-        } else {
-            filteredPayload = new LinkedHashMap<>(payload);
-        }
-
-        if (filter.isDropNullValues()) {
-            filteredPayload.values().removeIf(value -> value == null);
-        }
-
-        if (filteredPayload.isEmpty()) {
-            return Optional.empty();
-        }
-
-        return Optional.of(filteredPayload);
+        // 필터를 적용하지 않고 모든 텔레메트리를 업로드한다.
+        return Optional.of(new LinkedHashMap<>(payload));
     }
 
     private byte[] serialize(Map<String, Object> requestBody) {
@@ -245,6 +197,7 @@ public class MesApiService {
             return;
         }
         String key = buildRecordKey(machineName, tagName);
+        // energy_usage 태그를 window 단위로 묶어 평균을 내는 로직 (문서의 에너지 집계 설명)
         energyAggregationBuckets.compute(key, (k, bucket) -> {
             if (bucket == null) {
                 bucket = new AggregateBucket(machineName, tagName);

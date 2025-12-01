@@ -20,6 +20,10 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.Optional;
 
+/**
+ * CtrlLine → Gateway → Milo Server 명령 흐름을 담당.
+ * HMAC 인증, START/ACK/STOP 라인 지령, 그리고 개별 태그 직접 쓰기까지 모두 여기서 처리한다.
+ */
 @Slf4j
 @RestController
 @RequestMapping("/api/v1")
@@ -89,6 +93,7 @@ public class CmdController {
 
         String lineGroup = joinGroup(factory, line);
 
+        // Milo-Server/Client/CtrlLine 문서에서 언급한 HMAC 서명을 동일하게 계산해 인증을 맞춘다.
         String signaturePayload = buildSignaturePayload(factory, line, action, orderNo, targetQty, itemCode, ppm);
         String providedToken = tokenHeader.substring(7).trim();
         if (!HmacVerifier.verify(mesSecretKey, signaturePayload, providedToken)) {
@@ -129,6 +134,7 @@ public class CmdController {
                 }
             }
 
+            // 최종적으로 lineGroup.command 노드에 START:orderNo:qty:itemCode[:ppm]을 쓰는 부분
             boolean ok = miloClient.sendLineCommand(lineGroup, action, orderNo, targetQty, ppm, itemCode);
             if (ok) {
                 return ResponseEntity.ok(Map.of(
@@ -150,6 +156,7 @@ public class CmdController {
         }
 
         // 2) Machine-level or direct node write (fallback for diagnostics)
+        // 라인 명령 외에 특정 기계/태그를 직접 쓰는 디버깅 경로
         Object value = req.getOrDefault("value", action);
         if (value == null) {
             return ResponseEntity.badRequest().body(Map.of(
