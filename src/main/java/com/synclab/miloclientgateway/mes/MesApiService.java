@@ -69,34 +69,28 @@ public class MesApiService {
         }
         Map<String, Object> filteredPayload = filteredPayloadOpt.get();
 
-        if (isEquipmentCodeTag(tagName)) {
+        String effectiveTag = tagName;
+        effectiveTag = enrichStatePayloadIfNeeded(machineName, effectiveTag, filteredPayload);
+        effectiveTag = enrichEnvironmentPayloadIfNeeded(machineName, effectiveTag, filteredPayload);
+
+        if (isEquipmentCodeTag(effectiveTag)) {
             Object equipmentCode = filteredPayload.get("value");
             if (equipmentCode != null && !equipmentCode.toString().isBlank()) {
                 equipmentCodeByMachine.put(machineName, equipmentCode.toString());
             }
         }
 
-        if (isStateTag(tagName)) {
-            Object currentState = filteredPayload.get("value");
-            if (currentState != null && !currentState.toString().isBlank()) {
-                Map<String, Object> statePayload = new LinkedHashMap<>();
-                statePayload.put("equipment_code", resolveEquipmentCode(machineName));
-                statePayload.put("state", currentState.toString());
-                filteredPayload.put("value", statePayload);
-            }
-        }
-
-        if (handleNgTelemetry(machineName, tagName, filteredPayload)) {
+        if (handleNgTelemetry(machineName, effectiveTag, filteredPayload)) {
             return;
         }
 
-        if (shouldAggregate(tagName)
+        if (shouldAggregate(effectiveTag)
                 && pipelineProperties.getEnergyAggregation().isEnabled()) {
-            bufferEnergyUsage(machineName, tagName, filteredPayload);
+            bufferEnergyUsage(machineName, effectiveTag, filteredPayload);
             return;
         }
 
-        sendPayload(machineName, tagName, filteredPayload);
+        sendPayload(machineName, effectiveTag, filteredPayload);
     }
 
     private Object normalizeTelemetryValue(String tagName, Object value) {
@@ -165,6 +159,67 @@ public class MesApiService {
 
     private boolean isStateTag(String tagName) {
         return tagName != null && "state".equalsIgnoreCase(tagName);
+    }
+
+    private boolean isEnvironmentPayloadTag(String tagName) {
+        if (tagName == null) {
+            return false;
+        }
+        String normalized = tagName.toLowerCase();
+        return normalized.contains("environment");
+    }
+
+    private String enrichStatePayloadIfNeeded(String machineName, String tagName, Map<String, Object> payload) {
+        if (!isStateTag(tagName)) {
+            return tagName;
+        }
+        Object currentState = payload.get("value");
+        if (currentState != null && !currentState.toString().isBlank()) {
+            Map<String, Object> statePayload = new LinkedHashMap<>();
+            statePayload.put("equipment_code", resolveEquipmentCode(machineName));
+            statePayload.put("state", currentState.toString());
+            payload.put("value", statePayload);
+        }
+        return tagName;
+    }
+
+    private String enrichEnvironmentPayloadIfNeeded(String machineName, String tagName, Map<String, Object> payload) {
+        if (!isEnvironmentPayloadTag(tagName)) {
+            return tagName;
+        }
+        Map<String, Object> envMap = toMap(payload.get("value"));
+        if (envMap == null || envMap.isEmpty()) {
+            return tagName;
+        }
+        Map<String, Object> sanitized = new LinkedHashMap<>();
+        sanitized.put("factory_code", envMap.getOrDefault("factory_code", extractFactoryCode(machineName)));
+        sanitized.put("temperature", envMap.get("temperature"));
+        sanitized.put("humidity", envMap.get("humidity"));
+        sanitized.put("timestamp", envMap.getOrDefault("timestamp", System.currentTimeMillis()));
+        payload.put("value", sanitized);
+        payload.put("tag", "environment");
+        return "environment";
+    }
+
+    private Map<String, Object> toMap(Object value) {
+        if (value instanceof Map<?, ?> raw) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            raw.forEach((k, v) -> {
+                if (k != null) {
+                    result.put(k.toString(), v);
+                }
+            });
+            return result;
+        }
+        return null;
+    }
+
+    private String extractFactoryCode(String machineName) {
+        if (machineName == null || machineName.isBlank()) {
+            return "";
+        }
+        int idx = machineName.indexOf('.');
+        return idx > 0 ? machineName.substring(0, idx) : machineName;
     }
 
     private byte[] serialize(Map<String, Object> requestBody) {
