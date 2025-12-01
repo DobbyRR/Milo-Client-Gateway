@@ -76,6 +76,16 @@ public class MesApiService {
             }
         }
 
+        if (isStateTag(tagName)) {
+            Object currentState = filteredPayload.get("value");
+            if (currentState != null && !currentState.toString().isBlank()) {
+                Map<String, Object> statePayload = new LinkedHashMap<>();
+                statePayload.put("equipment_code", resolveEquipmentCode(machineName));
+                statePayload.put("state", currentState.toString());
+                filteredPayload.put("value", statePayload);
+            }
+        }
+
         if (handleNgTelemetry(machineName, tagName, filteredPayload)) {
             return;
         }
@@ -151,6 +161,10 @@ public class MesApiService {
     private Optional<Map<String, Object>> applyFiltering(Map<String, Object> payload) {
         // 필터를 적용하지 않고 모든 텔레메트리를 업로드한다.
         return Optional.of(new LinkedHashMap<>(payload));
+    }
+
+    private boolean isStateTag(String tagName) {
+        return tagName != null && "state".equalsIgnoreCase(tagName);
     }
 
     private byte[] serialize(Map<String, Object> requestBody) {
