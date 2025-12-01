@@ -152,9 +152,65 @@ public class MesApiService {
         return payload;
     }
 
+    private static final Set<String> BASE_ALLOWED_SUFFIXES = buildBaseAllowedSuffixes();
+    private static final Set<String> ALWAYS_ALLOWED_CONTAINS = Set.of("alarm", "environment");
+
+    private static Set<String> buildBaseAllowedSuffixes() {
+        Set<String> suffixes = ConcurrentHashMap.newKeySet();
+        suffixes.addAll(NG_TAGS);
+        suffixes.add(NG_EVENT_TAG.toLowerCase());
+        suffixes.add(NG_PAYLOAD_TAG.toLowerCase());
+        suffixes.add("order_ng_status");
+        suffixes.add("order_summary_payload");
+        suffixes.add("order_ng_types_payload");
+        suffixes.add("production_performance_payload");
+        suffixes.add("equipment_code");
+        suffixes.add("state");
+        suffixes.add("alarm_active");
+        suffixes.add("alarmactive");
+        suffixes.add("alarm_level");
+        suffixes.add("alarmlevel");
+        suffixes.add("alarm_name");
+        suffixes.add("alarmname");
+        suffixes.add("alarm_type");
+        suffixes.add("alarmtype");
+        suffixes.add("alarm_code");
+        suffixes.add("alarmcode");
+        suffixes.add("alarm_cause");
+        suffixes.add("alarmcause");
+        suffixes.add("alarm_occurred_at");
+        suffixes.add("occurred_at");
+        suffixes.add("cleared_at");
+        suffixes.add("energy_usage");
+        suffixes.add("environment");
+        suffixes.add("environment_payload");
+        return Set.copyOf(suffixes);
+    }
+
     private Optional<Map<String, Object>> applyFiltering(Map<String, Object> payload) {
-        // 필터를 적용하지 않고 모든 텔레메트리를 업로드한다.
+        Object tagObj = payload.get("tag");
+        if (!(tagObj instanceof String tagName) || !isTelemetryAllowed(tagName)) {
+            return Optional.empty();
+        }
         return Optional.of(new LinkedHashMap<>(payload));
+    }
+
+    private boolean isTelemetryAllowed(String tagName) {
+        String lower = tagName.toLowerCase();
+        if (BASE_ALLOWED_SUFFIXES.contains(lower)) {
+            return true;
+        }
+        for (String suffix : BASE_ALLOWED_SUFFIXES) {
+            if (lower.endsWith("." + suffix)) {
+                return true;
+            }
+        }
+        for (String token : ALWAYS_ALLOWED_CONTAINS) {
+            if (lower.contains(token)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean isStateTag(String tagName) {
